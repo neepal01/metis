@@ -1,0 +1,119 @@
+{
+    "version": "2.1.0",
+    "runs": [
+        {
+            "tool": {
+                "driver": {
+                    "name": "Metis",
+                    "version": "1.5.0",
+                    "fullName": "Metis v1.5.0",
+                    "informationUri": "https://github.com/arm/metis",
+                    "rules": [
+                        {
+                            "id": "AI001",
+                            "name": "AiSecurityRisk",
+                            "helpUri": "https://raw.githubusercontent.com/arm/metis/main/docs/rules/AI001.md",
+                            "shortDescription": {
+                                "text": "AI-identified security vulnerability",
+                                "markdown": "AI-identified security vulnerability"
+                            },
+                            "fullDescription": {
+                                "text": "This rule indicates a security issue detected by an AI system. These insights are heuristic in nature and should be reviewed by a developer.",
+                                "markdown": "This rule indicates a security issue detected by an AI system. These insights are heuristic in nature and should be reviewed by a developer."
+                            },
+                            "defaultConfiguration": {
+                                "level": "warning"
+                            },
+                            "help": {
+                                "text": "Provides an overview of the security issue found by the AI system and a proposed mitigation.",
+                                "markdown": "Provides an overview of the security issue found by the AI system and a proposed mitigation."
+                            }
+                        }
+                    ]
+                }
+            },
+            "automationDetails": {
+                "id": "metis-run-1"
+            },
+            "results": [
+                {
+                    "ruleId": "AI001",
+                    "level": "warning",
+                    "message": {
+                        "id": "AI001",
+                        "arguments": [
+                            "Global FMP header parsing state is shared across update sessions without reset on failure"
+                        ],
+                        "text": "Global FMP header parsing state is shared across update sessions without reset on failure"
+                    },
+                    "locations": [
+                        {
+                            "physicalLocation": {
+                                "artifactLocation": {
+                                    "uri": "platform/ext/target/arm/corstone1000/bootloader/mcuboot/tfm_mcuboot_fwu.c"
+                                },
+                                "region": {
+                                    "startLine": 329,
+                                    "endLine": 330,
+                                    "snippet": {
+                                        "text": "fmp_header_image_info_t fmp_header_image_info[FWU_COMPONENT_NUMBER];\nstruct fwu_esrt_data_wrapper esrt;"
+                                    }
+                                },
+                                "contextRegion": {
+                                    "startLine": 326,
+                                    "endLine": 332,
+                                    "snippet": {
+                                        "text": "bool is_initialized = false;\nbool is_installed = false;\n\nfmp_header_image_info_t fmp_header_image_info[FWU_COMPONENT_NUMBER];\nstruct fwu_esrt_data_wrapper esrt;\n\n#define IMAGE_ACCEPTED          (1)"
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    "partialFingerprints": {
+                        "primaryLocationLineHash": "0c9e147c9d397afd44abbbd04948e8f20bf61702e5ee2aec553212540cb18f34",
+                        "metisAnchor/v1": "c477b19a7aa7638a7263a8dad78c54861684400f90442aaec9d69a49451adf46"
+                    },
+                    "properties": {
+                        "metisFindingId": "c1bbe3103a0d4c17906ca8f876cd1ef3",
+                        "cwe": "CWE-362",
+                        "severity": "Medium",
+                        "reasoning": "The file keeps per-component FMP header and received-image counters in global state. This state is initialized only by fmp_header_image_info_init() during fwu_bootloader_init(), but failed, rejected, aborted, or completed update flows shown in this file do not reset fmp_hdr_size_recvd or image_size_recvd for the component. Subsequent firmware update attempts in the same boot can therefore reuse stale fw_version/header data or stale image_size_recvd offsets. For example, fwu_bootloader_load_image skips header parsing once fmp_hdr_size_recvd equals the header size and writes at image_offset + image_size_recvd. This can cause later uploads to be written at the wrong offset or evaluated against an old version, potentially corrupting staged images or bypassing intended update sequencing. Reachability depends on higher-level FWU session management, but the state lifetime issue is visible in this file.",
+                        "mitigation": "Reset fmp_header_image_info for a component at the start of a new staging operation, after install/reject/abort, and on any load error. Track explicit transaction/session state so stale per-component counters cannot affect subsequent updates.",
+                        "confidence": 0.72,
+                        "anchor": {
+                            "file_path": "platform/ext/target/arm/corstone1000/bootloader/mcuboot/tfm_mcuboot_fwu.c",
+                            "start_line": 329,
+                            "end_line": 330,
+                            "start_col": 0,
+                            "end_col": 34,
+                            "start_byte": 10192,
+                            "end_byte": 10295,
+                            "symbol": null,
+                            "kind": "range",
+                            "content_hash": "fbfdb666f3154613",
+                            "confidence": "exact"
+                        },
+                        "metisTriaged": true,
+                        "metisTriageStatus": "valid",
+                        "metisTriageReason": "Verdict: the finding is supported because the per-component global FMP parsing counters are initialized only during bootloader init and are reused by load logic without reset in staging init or load error exits. Evidence: global state is declared at platform/ext/target/arm/corstone1000/bootloader/mcuboot/tfm_mcuboot_fwu.c:329, reset only by fmp_header_image_info_init at lines 1728-1734 and called from fwu_bootloader_init at lines 1834-1846, while staging init only erases staging at lines 1853-1882, load skips parsing when fmp_hdr_size_recvd is complete at lines 1961-1974, writes using image_size_recvd at lines 2123-2125, and increments it at line 2149. Gap: none.",
+                        "metisTriageTimestamp": "2026-09-22T15:25:36.958258+00:00",
+                        "metisEvidenceRequirements": [
+                            "local_context",
+                            "symbol_definition",
+                            "use_site",
+                            "indirection_resolution"
+                        ],
+                        "metisEvidenceCoverage": {
+                            "local_context": 2,
+                            "symbol_definition": 4,
+                            "use_site": 12,
+                            "indirection_resolution": 1
+                        },
+                        "metisMissingEvidence": []
+                    }
+                }
+            ]
+        }
+    ],
+    "$schema": "https://json.schemastore.org/sarif-2.1.0.json"
+}

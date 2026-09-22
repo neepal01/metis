@@ -1,0 +1,1545 @@
+{
+    "version": "2.1.0",
+    "runs": [
+        {
+            "tool": {
+                "driver": {
+                    "name": "Metis",
+                    "version": "1.5.0",
+                    "fullName": "Metis v1.5.0",
+                    "informationUri": "https://github.com/arm/metis",
+                    "rules": [
+                        {
+                            "id": "AI001",
+                            "name": "AiSecurityRisk",
+                            "helpUri": "https://raw.githubusercontent.com/arm/metis/main/docs/rules/AI001.md",
+                            "shortDescription": {
+                                "text": "AI-identified security vulnerability",
+                                "markdown": "AI-identified security vulnerability"
+                            },
+                            "fullDescription": {
+                                "text": "This rule indicates a security issue detected by an AI system. These insights are heuristic in nature and should be reviewed by a developer.",
+                                "markdown": "This rule indicates a security issue detected by an AI system. These insights are heuristic in nature and should be reviewed by a developer."
+                            },
+                            "defaultConfiguration": {
+                                "level": "warning"
+                            },
+                            "help": {
+                                "text": "Provides an overview of the security issue found by the AI system and a proposed mitigation.",
+                                "markdown": "Provides an overview of the security issue found by the AI system and a proposed mitigation."
+                            }
+                        }
+                    ]
+                }
+            },
+            "automationDetails": {
+                "id": "metis-run-1"
+            },
+            "results": [
+                {
+                    "ruleId": "AI001",
+                    "level": "warning",
+                    "message": {
+                        "id": "AI001",
+                        "arguments": [
+                            "AEAD operation is released using an output-vector pointer that is not initialized for setup failure paths"
+                        ],
+                        "text": "AEAD operation is released using an output-vector pointer that is not initialized for setup failure paths"
+                    },
+                    "locations": [
+                        {
+                            "physicalLocation": {
+                                "artifactLocation": {
+                                    "uri": "secure_fw/partitions/crypto/crypto_aead.c"
+                                },
+                                "region": {
+                                    "startLine": 97,
+                                    "endLine": 117,
+                                    "snippet": {
+                                        "text": "if ((sid == TFM_CRYPTO_AEAD_ENCRYPT_SETUP_SID) ||\n        (sid == TFM_CRYPTO_AEAD_DECRYPT_SETUP_SID)) {\n        p_handle = out_vec[0].base;\n        if ((out_vec[0].base == NULL) || (out_vec[0].len < sizeof(uint32_t))) {\n            return PSA_ERROR_PROGRAMMER_ERROR;\n        }\n        *p_handle = iov->op_handle;\n        status = tfm_crypto_operation_alloc(TFM_CRYPTO_AEAD_OPERATION,\n                                            out_vec[0].base,\n                                            (void **)&operation);\n...\n    case TFM_CRYPTO_AEAD_ENCRYPT_SETUP_SID:\n    {\n        status = psa_aead_encrypt_setup(operation, library_key, iov->alg);\n        if (status != PSA_SUCCESS) {\n            goto release_operation_and_return;\n        }\n    }\n...\nrelease_operation_and_return:\n    /* Release the operation context, ignore if the operation fails. */\n    (void)tfm_crypto_operation_release(p_handle);\n    return status;"
+                                    }
+                                },
+                                "contextRegion": {
+                                    "startLine": 94,
+                                    "endLine": 100,
+                                    "snippet": {
+                                        "text": "                                  additional_data, additional_data_length,\n                                  ciphertext, ciphertext_length,\n                                  plaintext, plaintext_size, &out_vec[0].len);\n        if (status != PSA_SUCCESS) {\n            out_vec[0].len = 0;\n        }\n        return status;"
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    "partialFingerprints": {
+                        "primaryLocationLineHash": "33d43577116fcfa394ec00e07d40c6129b44437f9ea3776118841f917576cf90",
+                        "metisAnchor/v1": "95134ce166f2fecf774ea00d3d033c9b6d2c94d22b67e09f18a61fd5a03abe9a"
+                    },
+                    "properties": {
+                        "metisFindingId": "4826513791ad48df96aa3c2f6fcfb5b1",
+                        "cwe": "CWE-772",
+                        "severity": "Medium",
+                        "reasoning": "For encrypt/decrypt setup, p_handle is set to out_vec[0].base before tfm_crypto_operation_alloc(), and the code writes the caller-supplied iov->op_handle into that location before allocation. If allocation chooses or writes a different handle value into out_vec[0].base, release_operation_and_return will release that allocated operation. However, if allocation does not update the caller-visible handle until later, or if psa_aead_encrypt_setup()/psa_aead_decrypt_setup() fails after an operation object has been allocated, the cleanup uses the preallocation iov->op_handle rather than an explicitly captured allocated handle. In that case the newly allocated operation may not be released, or an unintended handle may be passed to the release routine. Because this is a secure firmware crypto service handling stateful operation contexts across a client boundary, a setup-failure leak can exhaust a limited operation table and create denial of service; releasing the wrong handle could also affect another operation if handle values are reusable or client-controlled. The exact behavior depends on tfm_crypto_operation_alloc()/release(), so this is a source-level candidate rather than a confirmed exploit.",
+                        "mitigation": "Ensure the allocation routine returns/stores the definitive allocated handle before any cleanup path can run, and release exactly that handle on setup failure. Prefer using a local uint32_t allocated_handle initialized only by tfm_crypto_operation_alloc(), update p_handle after successful allocation, and pass the same validated handle to tfm_crypto_operation_release(). Avoid seeding the release handle with client-provided iov->op_handle for setup calls unless that is explicitly the allocation contract.",
+                        "confidence": 0.58,
+                        "anchor": {
+                            "file_path": "secure_fw/partitions/crypto/crypto_aead.c",
+                            "start_line": 97,
+                            "end_line": 117,
+                            "start_col": 0,
+                            "end_col": 66,
+                            "start_byte": 3849,
+                            "end_byte": 4692,
+                            "symbol": "secure_fw/partitions/crypto/crypto_aead.c::tfm_crypto_aead_interface",
+                            "kind": "range",
+                            "content_hash": "8a61c7e813bb46c7",
+                            "confidence": "fuzzy"
+                        },
+                        "metisTriaged": true,
+                        "metisTriageStatus": "invalid",
+                        "metisTriageReason": "Verdict: The finding is contradicted because the setup path releases the same output-vector handle pointer that allocation updates before any setup-failure cleanup. Evidence: crypto_aead seeds and passes p_handle/out_vec[0].base to allocation, setup failure jumps to release, allocation rejects non-invalid handles before allocation and writes the allocated handle to *handle on success, and release clears/frees the referenced handle at secure_fw/partitions/crypto/crypto_aead.c:106, secure_fw/partitions/crypto/crypto_aead.c:110, secure_fw/partitions/crypto/crypto_aead.c:111, secure_fw/partitions/crypto/crypto_aead.c:154, secure_fw/partitions/crypto/crypto_aead.c:156, secure_fw/partitions/crypto/crypto_aead.c:263, secure_fw/partitions/crypto/crypto_alloc.c:89, secure_fw/partitions/crypto/crypto_alloc.c:90, secure_fw/partitions/crypto/crypto_alloc.c:107, secure_fw/partitions/crypto/crypto_alloc.c:110, secure_fw/partitions/crypto/crypto_alloc.c:126, secure_fw/partitions/crypto/crypto_alloc.c:141. Gap: none.",
+                        "metisTriageTimestamp": "2026-09-22T15:28:08.670893+00:00",
+                        "metisEvidenceRequirements": [
+                            "local_context",
+                            "symbol_definition",
+                            "use_site",
+                            "indirection_resolution"
+                        ],
+                        "metisEvidenceCoverage": {
+                            "local_context": 2,
+                            "symbol_definition": 3,
+                            "use_site": 12,
+                            "indirection_resolution": 1
+                        },
+                        "metisMissingEvidence": []
+                    }
+                },
+                {
+                    "ruleId": "AI001",
+                    "level": "note",
+                    "message": {
+                        "id": "AI001",
+                        "arguments": [
+                            "Stateful AEAD operation is not released after successful setup when the handle write-back may fail later at the IPC boundary"
+                        ],
+                        "text": "Stateful AEAD operation is not released after successful setup when the handle write-back may fail later at the IPC boundary"
+                    },
+                    "locations": [
+                        {
+                            "physicalLocation": {
+                                "artifactLocation": {
+                                    "uri": "secure_fw/partitions/crypto/crypto_aead.c"
+                                },
+                                "region": {
+                                    "startLine": 154,
+                                    "endLine": 179,
+                                    "snippet": {
+                                        "text": "p_handle = out_vec[0].base;\n        if ((out_vec[0].base == NULL) || (out_vec[0].len < sizeof(uint32_t))) {\n            return PSA_ERROR_PROGRAMMER_ERROR;\n        }\n        *p_handle = iov->op_handle;\n        status = tfm_crypto_operation_alloc(TFM_CRYPTO_AEAD_OPERATION,\n                                            out_vec[0].base,\n                                            (void **)&operation);\n...\n    case TFM_CRYPTO_AEAD_ENCRYPT_SETUP_SID:\n    {\n        status = psa_aead_encrypt_setup(operation, library_key, iov->alg);\n        if (status != PSA_SUCCESS) {\n            goto release_operation_and_return;\n        }\n    }\n    break;\n    case TFM_CRYPTO_AEAD_DECRYPT_SETUP_SID:\n    {\n        status = psa_aead_decrypt_setup(operation, library_key, iov->alg);\n        if (status != PSA_SUCCESS) {\n            goto release_operation_and_return;\n        }\n    }\n    break;"
+                                    }
+                                },
+                                "contextRegion": {
+                                    "startLine": 151,
+                                    "endLine": 157,
+                                    "snippet": {
+                                        "text": "    switch (sid) {\n    case TFM_CRYPTO_AEAD_ENCRYPT_SETUP_SID:\n    {\n        status = psa_aead_encrypt_setup(operation, library_key, iov->alg);\n        if (status != PSA_SUCCESS) {\n            goto release_operation_and_return;\n        }"
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    "partialFingerprints": {
+                        "primaryLocationLineHash": "71a4cfd24cdbc28fee4f50973fc0b658d31a77425748f4413362896131267149",
+                        "metisAnchor/v1": "7f441c9bc0a8469efc74f519586c09f5d05b3a2e56050264b861c9c42f07bfaf"
+                    },
+                    "properties": {
+                        "metisFindingId": "d682ddf98bd64952ad0195fc35bc817d",
+                        "cwe": "CWE-772",
+                        "severity": "Low",
+                        "reasoning": "The setup path allocates an operation and returns success after psa_aead_*_setup() succeeds, relying on out_vec[0].base to communicate the newly allocated handle to the caller. This file validates only that out_vec[0] is non-NULL and large enough before allocation; it does not include a rollback path for cases where the secure-service return or final write-back to the client fails after the allocation succeeds. In firmware PSA IPC designs, output vectors often cross a privilege boundary, and a client-provided or invalidated output buffer can cause the handle not to be delivered even though the secure partition has consumed an operation slot. If such a late copy/write-back failure is possible in the surrounding framework, repeated setup calls can orphan operation contexts and exhaust the crypto operation pool. This candidate depends on the IPC marshalling semantics outside this file, but the source shows the lifetime coupling between allocation and caller-visible handle delivery without local compensation.",
+                        "mitigation": "Where possible, allocate the operation only after the IPC layer has pinned/validated the destination for the handle, or provide a framework-level cleanup hook that releases newly allocated operations if the final response copy to the client fails. Keep the allocated handle in secure-owned state until successful write-back is guaranteed, or design the handle return path so allocation and handle publication are atomic with respect to IPC failure.",
+                        "confidence": 0.46,
+                        "anchor": {
+                            "file_path": "secure_fw/partitions/crypto/crypto_aead.c",
+                            "start_line": 154,
+                            "end_line": 179,
+                            "start_col": 0,
+                            "end_col": 46,
+                            "start_byte": 6155,
+                            "end_byte": 7071,
+                            "symbol": "secure_fw/partitions/crypto/crypto_aead.c::tfm_crypto_aead_interface",
+                            "kind": "range",
+                            "content_hash": "cd9208236013074b",
+                            "confidence": "fuzzy"
+                        },
+                        "metisTriaged": true,
+                        "metisTriageStatus": "valid",
+                        "metisTriageReason": "Verdict: the finding is supported because AEAD setup allocates an operation, publishes the handle into the output vector before setup, returns success after setup without releasing it, and the IPC wrapper later writes/unmaps output vectors with no cleanup on write-back failure. Evidence: setup validates and stores the handle then allocates at secure_fw/partitions/crypto/crypto_aead.c:104, secure_fw/partitions/crypto/crypto_aead.c:107, secure_fw/partitions/crypto/crypto_aead.c:110, secure_fw/partitions/crypto/crypto_aead.c:111; successful setup falls through to return status at secure_fw/partitions/crypto/crypto_aead.c:154, secure_fw/partitions/crypto/crypto_aead.c:155, secure_fw/partitions/crypto/crypto_aead.c:159, secure_fw/partitions/crypto/crypto_aead.c:259; release is only on the error label at secure_fw/partitions/crypto/crypto_aead.c:261 and secure_fw/partitions/crypto/crypto_aead.c:263; the caller dispatches then writes/unmaps outputs after the return at secure_fw/partitions/crypto/crypto_init.c:299, secure_fw/partitions/crypto/crypto_init.c:301, secure_fw/partitions/crypto/crypto_init.c:304, secure_fw/partitions/crypto/crypto_init.c:318, secure_fw/partitions/crypto/crypto_init.c:320 with no checked rollback before returning at secure_fw/partitions/crypto/crypto_init.c:327. Gap: none.",
+                        "metisTriageTimestamp": "2026-09-22T15:28:49.267099+00:00",
+                        "metisEvidenceRequirements": [
+                            "local_context",
+                            "symbol_definition",
+                            "use_site",
+                            "indirection_resolution"
+                        ],
+                        "metisEvidenceCoverage": {
+                            "local_context": 2,
+                            "symbol_definition": 5,
+                            "use_site": 12,
+                            "indirection_resolution": 1
+                        },
+                        "metisMissingEvidence": []
+                    }
+                },
+                {
+                    "ruleId": "AI001",
+                    "level": "warning",
+                    "message": {
+                        "id": "AI001",
+                        "arguments": [
+                            "Unsynchronized global operation table allocation may race and assign the same context to multiple callers"
+                        ],
+                        "text": "Unsynchronized global operation table allocation may race and assign the same context to multiple callers"
+                    },
+                    "locations": [
+                        {
+                            "physicalLocation": {
+                                "artifactLocation": {
+                                    "uri": "secure_fw/partitions/crypto/crypto_alloc.c"
+                                },
+                                "region": {
+                                    "startLine": 105,
+                                    "endLine": 114,
+                                    "snippet": {
+                                        "text": "for (i = 0; i < CRYPTO_CONC_OPER_NUM; i++) {\n        if (operations[i].in_use == TFM_CRYPTO_NOT_IN_USE) {\n            operations[i].in_use = TFM_CRYPTO_IN_USE;\n            operations[i].owner = partition_id;\n            operations[i].type = type;\n            *handle = i + 1;\n            *ctx = (void *) &(operations[i].operation);\n            return PSA_SUCCESS;\n        }\n    }"
+                                    }
+                                },
+                                "contextRegion": {
+                                    "startLine": 102,
+                                    "endLine": 108,
+                                    "snippet": {
+                                        "text": "        return status;\n    }\n\n    for (i = 0; i < CRYPTO_CONC_OPER_NUM; i++) {\n        if (operations[i].in_use == TFM_CRYPTO_NOT_IN_USE) {\n            operations[i].in_use = TFM_CRYPTO_IN_USE;\n            operations[i].owner = partition_id;"
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    "partialFingerprints": {
+                        "primaryLocationLineHash": "df8b49a54c322ebf9f7cb24405c7dd2fd323ea3eec2510b0b99fe0e7777fd916",
+                        "metisAnchor/v1": "47e7ddeef189910608c8de7a97721d4925b04e4eefe3bfcabdcf14b8e852e5ad"
+                    },
+                    "properties": {
+                        "metisFindingId": "1ebede9c59a547639ec837a304f9f589",
+                        "cwe": "CWE-362",
+                        "severity": "Medium",
+                        "reasoning": "The static global `operations` array is used as a shared allocation table, but the check-and-set sequence for `operations[i].in_use` is not protected by any lock, interrupt exclusion, atomic compare-and-swap, or other synchronization visible in this file. In a concurrent secure partition configuration, two callers could both observe the same slot as not in use before either completes the update, leading to the same backend context being handed out to multiple operations or owners. That could corrupt cryptographic operation state, cause cross-caller state confusion, or undermine owner/type checks later. Exploitability depends on whether this code can run concurrently in the target TF-M configuration, which is not established by this file.",
+                        "mitigation": "Protect all accesses and updates to the `operations` table with an appropriate mutex/critical section or use atomic state transitions for slot allocation. Ensure release and lookup follow the same synchronization discipline, or document and enforce single-threaded execution at this boundary.",
+                        "confidence": 0.72,
+                        "anchor": {
+                            "file_path": "secure_fw/partitions/crypto/crypto_alloc.c",
+                            "start_line": 105,
+                            "end_line": 114,
+                            "start_col": 0,
+                            "end_col": 5,
+                            "start_byte": 3030,
+                            "end_byte": 3413,
+                            "symbol": "secure_fw/partitions/crypto/crypto_alloc.c::tfm_crypto_operation_alloc",
+                            "kind": "range",
+                            "content_hash": "1bfe4ff787d09d6c",
+                            "confidence": "exact"
+                        },
+                        "metisTriaged": true,
+                        "metisTriageStatus": "invalid",
+                        "metisTriageReason": "Verdict: the reported race is contradicted by the partition configuration and SPM evidence showing the crypto partition uses the SFN model and SFN backend has only one thread, so concurrent entry into this allocation path is not established. Evidence: the shared operations table and check/set allocation are in secure_fw/partitions/crypto/crypto_alloc.c:50 and secure_fw/partitions/crypto/crypto_alloc.c:105-112, while secure_fw/partitions/crypto/tfm_crypto.yaml:13 sets the crypto partition model to SFN and secure_fw/spm/core/interrupt.c:259 documents that SFN backend has only one thread/no thread switch. Gap: none.",
+                        "metisTriageTimestamp": "2026-09-22T15:28:56.138575+00:00",
+                        "metisEvidenceRequirements": [
+                            "local_context",
+                            "symbol_definition",
+                            "use_site",
+                            "indirection_resolution"
+                        ],
+                        "metisEvidenceCoverage": {
+                            "local_context": 2,
+                            "symbol_definition": 5,
+                            "use_site": 12,
+                            "indirection_resolution": 1
+                        },
+                        "metisMissingEvidence": []
+                    }
+                },
+                {
+                    "ruleId": "AI001",
+                    "level": "warning",
+                    "message": {
+                        "id": "AI001",
+                        "arguments": [
+                            "Possible null pointer dereference and invalid write in operation release"
+                        ],
+                        "text": "Possible null pointer dereference and invalid write in operation release"
+                    },
+                    "locations": [
+                        {
+                            "physicalLocation": {
+                                "artifactLocation": {
+                                    "uri": "secure_fw/partitions/crypto/crypto_alloc.c"
+                                },
+                                "region": {
+                                    "startLine": 119,
+                                    "endLine": 126,
+                                    "snippet": {
+                                        "text": "psa_status_t tfm_crypto_operation_release(uint32_t *handle)\n{\n    uint32_t h_val = *handle;\n    int32_t partition_id = 0;\n    psa_status_t status;\n\n    /* Handle shall be cleaned up always at first */\n    *handle = TFM_CRYPTO_INVALID_HANDLE;"
+                                    }
+                                },
+                                "contextRegion": {
+                                    "startLine": 116,
+                                    "endLine": 122,
+                                    "snippet": {
+                                        "text": "    return PSA_ERROR_NOT_PERMITTED;\n}\n\npsa_status_t tfm_crypto_operation_release(uint32_t *handle)\n{\n    uint32_t h_val = *handle;\n    int32_t partition_id = 0;"
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    "partialFingerprints": {
+                        "primaryLocationLineHash": "4ad2cce1c72d39080b1132eff65ed83bf382631f30c7f8b7ceb592259283c31f",
+                        "metisAnchor/v1": "7065b19a2af15f5e6f32f69af6eaad85c1034943ac80a196885e0dfa6c694032"
+                    },
+                    "properties": {
+                        "metisFindingId": "b62f780991cf456fa00f44e5915a301e",
+                        "cwe": "CWE-476",
+                        "severity": "Medium",
+                        "reasoning": "tfm_crypto_operation_release() reads from and writes to the caller-provided handle pointer without first checking whether it is NULL or otherwise valid. A NULL handle would be dereferenced immediately at line 121, and line 126 writes through the pointer before any validation. If reachable from a malformed request or untrusted caller, this can crash the secure partition and produce a denial of service. The code validates the handle value only after dereferencing the pointer, so the validation order does not protect against an invalid pointer argument.",
+                        "mitigation": "Check `handle == NULL` before `uint32_t h_val = *handle;` and before `*handle = ...`; return `PSA_ERROR_INVALID_ARGUMENT` on NULL. Ensure any cross-boundary parameter-copying layer also validates pointer arguments before invoking this function.",
+                        "confidence": 0.82,
+                        "anchor": {
+                            "file_path": "secure_fw/partitions/crypto/crypto_alloc.c",
+                            "start_line": 119,
+                            "end_line": 126,
+                            "start_col": 0,
+                            "end_col": 40,
+                            "start_byte": 3454,
+                            "end_byte": 3695,
+                            "symbol": "secure_fw/partitions/crypto/crypto_alloc.c::tfm_crypto_operation_release",
+                            "kind": "range",
+                            "content_hash": "fe4c2f08b010924b",
+                            "confidence": "exact"
+                        },
+                        "metisTriaged": true,
+                        "metisTriageStatus": "valid",
+                        "metisTriageReason": "Verdict: tfm_crypto_operation_release dereferences and writes through its handle parameter before any local NULL check or handle-value validation. Evidence: the function reads *handle at secure_fw/partitions/crypto/crypto_alloc.c:121 and writes *handle at secure_fw/partitions/crypto/crypto_alloc.c:126, while validation of h_val occurs only afterward at secure_fw/partitions/crypto/crypto_alloc.c:128. Gap: none for the reported function body; observed call sites generally validate p_handle before passing it, but that does not contradict the unsafe callee behavior.",
+                        "metisTriageTimestamp": "2026-09-22T15:29:01.133540+00:00",
+                        "metisEvidenceRequirements": [
+                            "local_context",
+                            "symbol_definition",
+                            "use_site",
+                            "indirection_resolution"
+                        ],
+                        "metisEvidenceCoverage": {
+                            "local_context": 2,
+                            "symbol_definition": 6,
+                            "use_site": 12,
+                            "indirection_resolution": 1
+                        },
+                        "metisMissingEvidence": []
+                    }
+                },
+                {
+                    "ruleId": "AI001",
+                    "level": "warning",
+                    "message": {
+                        "id": "AI001",
+                        "arguments": [
+                            "Unsynchronized release can clear a context while another execution path is using or looking it up"
+                        ],
+                        "text": "Unsynchronized release can clear a context while another execution path is using or looking it up"
+                    },
+                    "locations": [
+                        {
+                            "physicalLocation": {
+                                "artifactLocation": {
+                                    "uri": "secure_fw/partitions/crypto/crypto_alloc.c"
+                                },
+                                "region": {
+                                    "startLine": 138,
+                                    "endLine": 147,
+                                    "snippet": {
+                                        "text": "if ((operations[h_val - 1].in_use == TFM_CRYPTO_IN_USE) &&\n        (operations[h_val - 1].owner == partition_id)) {\n\n        memset_operation_context(h_val - 1);\n        operations[h_val - 1].in_use = TFM_CRYPTO_NOT_IN_USE;\n        operations[h_val - 1].type = TFM_CRYPTO_OPERATION_NONE;\n        operations[h_val - 1].owner = 0;\n\n        return PSA_SUCCESS;\n    }"
+                                    }
+                                },
+                                "contextRegion": {
+                                    "startLine": 135,
+                                    "endLine": 141,
+                                    "snippet": {
+                                        "text": "        return status;\n    }\n\n    if ((operations[h_val - 1].in_use == TFM_CRYPTO_IN_USE) &&\n        (operations[h_val - 1].owner == partition_id)) {\n\n        memset_operation_context(h_val - 1);"
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    "partialFingerprints": {
+                        "primaryLocationLineHash": "a94b48fca60e326f969efcc8207586d8a5e5bdc541932e2db8e8814bdaf647f2",
+                        "metisAnchor/v1": "dbbe0e29348ee419bcb3bc9079577546707e9a4aa0e7462a8caddeff643f0d6b"
+                    },
+                    "properties": {
+                        "metisFindingId": "3de3c1a0402f4cd79ea2f80267d31d64",
+                        "cwe": "CWE-362",
+                        "severity": "Medium",
+                        "reasoning": "Release mutates and zeroes an entry in the global `operations` table without synchronization. Because lookup returns a direct pointer to `operations[handle - 1].operation`, another thread or callback that already obtained that pointer could continue using it while release clears the union and marks the slot free for reuse. Similarly, a concurrent lookup/release interleaving can observe partially reset metadata. In configurations that allow concurrent crypto service invocations, this creates a state-lifetime race that can lead to use-after-release style corruption of cryptographic state or cross-operation confusion. The file does not show external serialization, so the source candidate should be adjudicated against the platform scheduler/partition model.",
+                        "mitigation": "Serialize lookup/use/release of operation contexts with a lock or reference-counted lifetime model. Avoid returning unprotected raw pointers to shared table entries unless the caller holds a lock for the full use duration, or make release wait until no in-flight operation references remain.",
+                        "confidence": 0.7,
+                        "anchor": {
+                            "file_path": "secure_fw/partitions/crypto/crypto_alloc.c",
+                            "start_line": 138,
+                            "end_line": 147,
+                            "start_col": 0,
+                            "end_col": 5,
+                            "start_byte": 3954,
+                            "end_byte": 4321,
+                            "symbol": "secure_fw/partitions/crypto/crypto_alloc.c::tfm_crypto_operation_release",
+                            "kind": "range",
+                            "content_hash": "7f849d83ddb4e20b",
+                            "confidence": "exact"
+                        },
+                        "metisTriaged": true,
+                        "metisTriageStatus": "inconclusive",
+                        "metisTriageReason": "- Verdict: The finding is inconclusive because the local code shows unsynchronized shared-table mutation and raw pointer lookup, but the required execution-concurrency/serialization model is not resolved.\n- Evidence: `operations` is a static global table at `secure_fw/partitions/crypto/crypto_alloc.c:50`, lookup returns a direct pointer into it at `secure_fw/partitions/crypto/crypto_alloc.c:173` and `secure_fw/partitions/crypto/crypto_alloc.c:176`, and release clears and marks the same entry free at `secure_fw/partitions/crypto/crypto_alloc.c:141` through `secure_fw/partitions/crypto/crypto_alloc.c:144`.\n- Gap: No provided evidence resolves whether crypto service invocations can overlap or are externally serialized by the partition scheduler/dispatch path.",
+                        "metisTriageTimestamp": "2026-09-22T15:28:20.512801+00:00",
+                        "metisEvidenceRequirements": [
+                            "local_context",
+                            "symbol_definition",
+                            "use_site",
+                            "indirection_resolution"
+                        ],
+                        "metisEvidenceCoverage": {
+                            "local_context": 2,
+                            "symbol_definition": 3,
+                            "use_site": 12,
+                            "indirection_resolution": 1
+                        },
+                        "metisMissingEvidence": []
+                    }
+                },
+                {
+                    "ruleId": "AI001",
+                    "level": "warning",
+                    "message": {
+                        "id": "AI001",
+                        "arguments": [
+                            "Missing validation of IPC vector counts before indexing in_vec/out_vec"
+                        ],
+                        "text": "Missing validation of IPC vector counts before indexing in_vec/out_vec"
+                    },
+                    "locations": [
+                        {
+                            "physicalLocation": {
+                                "artifactLocation": {
+                                    "uri": "secure_fw/partitions/crypto/crypto_asymmetric.c"
+                                },
+                                "region": {
+                                    "startLine": 29,
+                                    "endLine": 44,
+                                    "snippet": {
+                                        "text": "psa_status_t tfm_crypto_asymmetric_sign_interface(psa_invec in_vec[],\n                                                  psa_outvec out_vec[],\n                                                  struct tfm_crypto_key_id_s *encoded_key)\n{\n    const struct tfm_crypto_pack_iovec *iov = in_vec[0].base;\n    psa_status_t status = PSA_ERROR_NOT_SUPPORTED;\n\n    tfm_crypto_library_key_id_t library_key = tfm_crypto_library_key_id_init(\n                                                  encoded_key->owner, encoded_key->key_id);\n    switch (iov->function_id) {\n    case TFM_CRYPTO_ASYMMETRIC_SIGN_MESSAGE_SID:\n    {\n        const uint8_t *input = in_vec[1].base;\n        size_t input_length = in_vec[1].len;\n        uint8_t *signature = out_vec[0].base;\n        size_t signature_size = out_vec[0].len;"
+                                    }
+                                },
+                                "contextRegion": {
+                                    "startLine": 26,
+                                    "endLine": 32,
+                                    "snippet": {
+                                        "text": "\n/*!@{*/\n#if CRYPTO_ASYM_SIGN_MODULE_ENABLED\npsa_status_t tfm_crypto_asymmetric_sign_interface(psa_invec in_vec[],\n                                                  psa_outvec out_vec[],\n                                                  struct tfm_crypto_key_id_s *encoded_key)\n{"
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    "partialFingerprints": {
+                        "primaryLocationLineHash": "07cb3b7e31698417d855fab2d6dc068f0ccd7c129d710fb8fa6e4bc94f86867c",
+                        "metisAnchor/v1": "e3989612c272ddfcee4df55d345ba63c1cf7735ecb778df87b5a973d9d901d05"
+                    },
+                    "properties": {
+                        "metisFindingId": "d8d4068c51f44ae68b863920ecea2048",
+                        "cwe": "CWE-129",
+                        "severity": "Medium",
+                        "reasoning": "The interface directly indexes in_vec[0], in_vec[1], and out_vec[0] without any local validation that the caller supplied enough input and output vectors. Later cases in the same function also access in_vec[2]. If this function can be reached with malformed or cross-version IPC metadata, these unchecked array accesses can read outside the vector arrays or dereference attacker-controlled/uninitialized vector entries across the non-secure to secure partition boundary. The file does not show any validation of vector counts before these accesses, so the safety of this code depends entirely on external dispatch guarantees.",
+                        "mitigation": "Validate the expected number of input and output vectors for each function_id before indexing, or ensure this function receives and checks in_len/out_len from the dispatcher. Reject calls with insufficient vectors before reading in_vec[n], out_vec[n], iov, or encoded_key.",
+                        "confidence": 0.72,
+                        "anchor": {
+                            "file_path": "secure_fw/partitions/crypto/crypto_asymmetric.c",
+                            "start_line": 29,
+                            "end_line": 44,
+                            "start_col": 0,
+                            "end_col": 47,
+                            "start_byte": 556,
+                            "end_byte": 1347,
+                            "symbol": "secure_fw/partitions/crypto/crypto_asymmetric.c::tfm_crypto_asymmetric_sign_interface",
+                            "kind": "range",
+                            "content_hash": "b979944827cad5c4",
+                            "confidence": "exact"
+                        },
+                        "metisTriaged": true,
+                        "metisTriageStatus": "invalid",
+                        "metisTriageReason": "Verdict: The reported out-of-bounds IPC vector indexing is contradicted by the resolved call path. Evidence: The only codebase call dispatches through tfm_crypto_api_dispatcher to tfm_crypto_asymmetric_sign_interface, and the service allocates PSA_MAX_IOVEC-sized, zero-initialized in_vec/out_vec arrays before populating them and dispatching, so insufficient IPC counts do not make in_vec[1], in_vec[2], or out_vec[0] outside the arrays. Gap: none.",
+                        "metisTriageTimestamp": "2026-09-22T15:28:36.738009+00:00",
+                        "metisEvidenceRequirements": [
+                            "local_context",
+                            "symbol_definition",
+                            "use_site"
+                        ],
+                        "metisEvidenceCoverage": {
+                            "local_context": 2,
+                            "symbol_definition": 9,
+                            "use_site": 10
+                        },
+                        "metisMissingEvidence": []
+                    }
+                },
+                {
+                    "ruleId": "AI001",
+                    "level": "warning",
+                    "message": {
+                        "id": "AI001",
+                        "arguments": [
+                            "Missing validation of IPC vector counts before asymmetric encrypt/decrypt vector indexing"
+                        ],
+                        "text": "Missing validation of IPC vector counts before asymmetric encrypt/decrypt vector indexing"
+                    },
+                    "locations": [
+                        {
+                            "physicalLocation": {
+                                "artifactLocation": {
+                                    "uri": "secure_fw/partitions/crypto/crypto_asymmetric.c"
+                                },
+                                "region": {
+                                    "startLine": 105,
+                                    "endLine": 122,
+                                    "snippet": {
+                                        "text": "psa_status_t tfm_crypto_asymmetric_encrypt_interface(psa_invec in_vec[],\n                                                     psa_outvec out_vec[],\n                                                     struct tfm_crypto_key_id_s *encoded_key)\n{\n    const struct tfm_crypto_pack_iovec *iov = in_vec[0].base;\n    psa_status_t status = PSA_ERROR_NOT_SUPPORTED;\n\n    tfm_crypto_library_key_id_t library_key = tfm_crypto_library_key_id_init(\n                                                  encoded_key->owner, encoded_key->key_id);\n    switch (iov->function_id) {\n    case TFM_CRYPTO_ASYMMETRIC_ENCRYPT_SID:\n    {\n        const uint8_t *input = in_vec[1].base;\n        size_t input_length = in_vec[1].len;\n        const uint8_t *salt = in_vec[2].base;\n        size_t salt_length = in_vec[2].len;\n        uint8_t *output = out_vec[0].base;\n        size_t output_size = out_vec[0].len;"
+                                    }
+                                },
+                                "contextRegion": {
+                                    "startLine": 102,
+                                    "endLine": 108,
+                                    "snippet": {
+                                        "text": "#endif /* CRYPTO_ASYM_SIGN_MODULE_ENABLED */\n\n#if CRYPTO_ASYM_ENCRYPT_MODULE_ENABLED\npsa_status_t tfm_crypto_asymmetric_encrypt_interface(psa_invec in_vec[],\n                                                     psa_outvec out_vec[],\n                                                     struct tfm_crypto_key_id_s *encoded_key)\n{"
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    "partialFingerprints": {
+                        "primaryLocationLineHash": "ccfebdc6d6eb56df9c0c57d91d41d7889f0ebb3ba2412b83706ec818379ce65c",
+                        "metisAnchor/v1": "14140c0c9d13f6154bc5639f8382bbecec99b2e31257dd03b59ff0e54b6b63d5"
+                    },
+                    "properties": {
+                        "metisFindingId": "8c6ad346b26344269e54345205ace786",
+                        "cwe": "CWE-129",
+                        "severity": "Medium",
+                        "reasoning": "The encrypt/decrypt interface assumes at least three input vectors and one output vector and indexes in_vec[0], in_vec[1], in_vec[2], and out_vec[0] without local bounds validation. In an IPC-facing crypto partition shim, vector counts are part of the trust boundary; if dispatch validation is absent, bypassed, or mismatched with this implementation, malformed calls could cause out-of-bounds reads of vector descriptors or use invalid base/length pairs in secure code. The reviewed source does not provide evidence that these preconditions are enforced here.",
+                        "mitigation": "Add explicit per-operation validation of vector counts before accessing vector elements, preferably using dispatcher-supplied in_len/out_len. Fail closed with an error status if the call does not provide the required vectors.",
+                        "confidence": 0.72,
+                        "anchor": {
+                            "file_path": "secure_fw/partitions/crypto/crypto_asymmetric.c",
+                            "start_line": 105,
+                            "end_line": 122,
+                            "start_col": 0,
+                            "end_col": 44,
+                            "start_byte": 3419,
+                            "end_byte": 4298,
+                            "symbol": "secure_fw/partitions/crypto/crypto_asymmetric.c::tfm_crypto_asymmetric_encrypt_interface",
+                            "kind": "range",
+                            "content_hash": "8accd7d1a8a1ce25",
+                            "confidence": "exact"
+                        },
+                        "metisTriaged": true,
+                        "metisTriageStatus": "valid",
+                        "metisTriageReason": "Verdict: the finding is valid because the asymmetric encrypt/decrypt interface dereferences in_vec[1], in_vec[2], and out_vec[0] without local vector-count validation, and the resolved dispatcher passes arrays onward without using in_len/out_len to enforce the required counts for this group. Evidence: crypto_asymmetric.c reads in_vec[0] then, for encrypt and decrypt cases, indexes in_vec[1], in_vec[2], and out_vec[0] at secure_fw/partitions/crypto/crypto_asymmetric.c:109, secure_fw/partitions/crypto/crypto_asymmetric.c:117, secure_fw/partitions/crypto/crypto_asymmetric.c:119, secure_fw/partitions/crypto/crypto_asymmetric.c:121, secure_fw/partitions/crypto/crypto_asymmetric.c:136, secure_fw/partitions/crypto/crypto_asymmetric.c:138, and secure_fw/partitions/crypto/crypto_asymmetric.c:140; the dispatcher receives in_len/out_len at secure_fw/partitions/crypto/crypto_init.c:196 but only checks in_vec[0].len at secure_fw/partitions/crypto/crypto_init.c:209 before dispatching to this interface at secure_fw/partitions/crypto/crypto_init.c:247. Gap: none.",
+                        "metisTriageTimestamp": "2026-09-22T15:28:47.381281+00:00",
+                        "metisEvidenceRequirements": [
+                            "local_context",
+                            "symbol_definition",
+                            "use_site"
+                        ],
+                        "metisEvidenceCoverage": {
+                            "local_context": 2,
+                            "symbol_definition": 9,
+                            "use_site": 10
+                        },
+                        "metisMissingEvidence": []
+                    }
+                },
+                {
+                    "ruleId": "AI001",
+                    "level": "note",
+                    "message": {
+                        "id": "AI001",
+                        "arguments": [
+                            "Configuration check does not require a private-key type when asymmetric signing or key-agreement algorithms are enabled"
+                        ],
+                        "text": "Configuration check does not require a private-key type when asymmetric signing or key-agreement algorithms are enabled"
+                    },
+                    "locations": [
+                        {
+                            "physicalLocation": {
+                                "artifactLocation": {
+                                    "uri": "secure_fw/partitions/crypto/crypto_check_config.h"
+                                },
+                                "region": {
+                                    "startLine": 81,
+                                    "endLine": 92,
+                                    "snippet": {
+                                        "text": "#if CRYPTO_ASYM_SIGN_MODULE_ENABLED && \\\n    (!defined(PSA_WANT_ALG_RSA_PKCS1V15_SIGN) && \\\n     !defined(PSA_WANT_ALG_RSA_PKCS1V15_SIGN_RAW) && \\\n     !defined(PSA_WANT_ALG_RSA_PSS) && \\\n     !defined(PSA_WANT_ALG_RSA_PSS_ANY_SALT) && \\\n     !defined(PSA_WANT_ALG_ECDSA) && \\\n     !defined(PSA_WANT_ALG_ECDSA_ANY) && \\\n     !defined(PSA_WANT_ALG_DETERMINISTIC_ECDSA) && \\\n     !defined(PSA_WANT_ALG_PURE_EDDSA) && \\\n     !defined(PSA_WANT_ALG_ED25519PH) && \\\n     !defined(PSA_WANT_ALG_ED448PH))\n#error \"CRYPTO_ASYM_SIGN_MODULE_ENABLED enabled, but not all prerequisites (missing asymmetric sign algorithms)!\"\n#endif\n\n#if CRYPTO_KEY_DERIVATION_MODULE_ENABLED && \\\n    (/* Key agreement */ \\\n     !defined(PSA_WANT_ALG_ECDH) && \\\n     !defined(PSA_WANT_ALG_FFDH) && \\\n     /* Key derivation */ \\"
+                                    }
+                                },
+                                "contextRegion": {
+                                    "startLine": 78,
+                                    "endLine": 84,
+                                    "snippet": {
+                                        "text": "#error \"CRYPTO_HASH_MODULE_ENABLED enabled, but not all prerequisites (missing HASH algorithms)!\"\n#endif\n\n#if CRYPTO_ASYM_SIGN_MODULE_ENABLED && \\\n    (!defined(PSA_WANT_ALG_RSA_PKCS1V15_SIGN) && \\\n     !defined(PSA_WANT_ALG_RSA_PKCS1V15_SIGN_RAW) && \\\n     !defined(PSA_WANT_ALG_RSA_PSS) && \\"
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    "partialFingerprints": {
+                        "primaryLocationLineHash": "cdde5ee46d6f1c342c6661610dce230de4900367924741ae6301d4b66de04f28",
+                        "metisAnchor/v1": "32be6483ead518b0db11d93484968e9175f1bb6e184220269a4b8461b423f965"
+                    },
+                    "properties": {
+                        "metisFindingId": "0264538ea90c4d04915f38c9f78c9963",
+                        "cwe": "CWE-657",
+                        "severity": "Low",
+                        "reasoning": "The file validates that asymmetric signing and key-derivation modules have at least one corresponding algorithm enabled, but this check is not paired with any requirement that private key types needed to use those algorithms are enabled. The only key-type prerequisite check earlier in the file accepts public asymmetric key types only (`PSA_WANT_KEY_TYPE_ECC_PUBLIC_KEY`, `PSA_WANT_KEY_TYPE_RSA_PUBLIC_KEY`, `PSA_WANT_KEY_TYPE_DH_PUBLIC_KEY`) and does not mention private RSA/ECC/DH key types. In a cross-configuration where signing or ECDH/FFDH is compiled while private key-type support is omitted, the resulting firmware may have mismatched PSA crypto capability gating. Depending on surrounding dispatch code, that can become a privilege-boundary/configuration issue: clients may be exposed to operations whose key-type validation or backend support was not actually compiled, potentially leading to inconsistent authorization/denial behavior or latent unsafe error paths. The reviewed source does not prove runtime reachability, but the configuration validation is incomplete for private-key operations.",
+                        "mitigation": "Extend the configuration validation so modules that perform private-key operations require compatible private key-type macros, for example RSA/ECC key-pair types for signing and ECC/DH key-pair types for key agreement, or add explicit build-time errors tying each enabled asymmetric algorithm to its required key type(s). Also consider checking algorithm/key-type combinations rather than only requiring at least one algorithm per module.",
+                        "confidence": 0.58,
+                        "anchor": {
+                            "file_path": "secure_fw/partitions/crypto/crypto_check_config.h",
+                            "start_line": 81,
+                            "end_line": 92,
+                            "start_col": 0,
+                            "end_col": 113,
+                            "start_byte": 2992,
+                            "end_byte": 3602,
+                            "symbol": null,
+                            "kind": "range",
+                            "content_hash": "8553532aa96c51ab",
+                            "confidence": "fuzzy"
+                        },
+                        "metisTriaged": true,
+                        "metisTriageStatus": "valid",
+                        "metisTriageReason": "Verdict: valid because the checked configuration only requires asymmetric signing/key-agreement algorithm macros and does not require corresponding key-pair/private-key macros. Evidence: the key-module prerequisite list includes only public asymmetric key types at secure_fw/partitions/crypto/crypto_check_config.h:27, secure_fw/partitions/crypto/crypto_check_config.h:28, and secure_fw/partitions/crypto/crypto_check_config.h:29; the signing check requires only signing algorithms at secure_fw/partitions/crypto/crypto_check_config.h:81 and secure_fw/partitions/crypto/crypto_check_config.h:91; and the key-derivation check treats ECDH/FFDH as key-agreement algorithms at secure_fw/partitions/crypto/crypto_check_config.h:101, secure_fw/partitions/crypto/crypto_check_config.h:103, and secure_fw/partitions/crypto/crypto_check_config.h:104. Gap: none.",
+                        "metisTriageTimestamp": "2026-09-22T15:28:54.667599+00:00",
+                        "metisEvidenceRequirements": [
+                            "local_context",
+                            "symbol_definition",
+                            "use_site",
+                            "indirection_resolution"
+                        ],
+                        "metisEvidenceCoverage": {
+                            "local_context": 2,
+                            "symbol_definition": 3,
+                            "use_site": 12,
+                            "indirection_resolution": 1
+                        },
+                        "metisMissingEvidence": []
+                    }
+                },
+                {
+                    "ruleId": "AI001",
+                    "level": "warning",
+                    "message": {
+                        "id": "AI001",
+                        "arguments": [
+                            "Unvalidated in/out vector entries are passed to PSA cipher routines"
+                        ],
+                        "text": "Unvalidated in/out vector entries are passed to PSA cipher routines"
+                    },
+                    "locations": [
+                        {
+                            "physicalLocation": {
+                                "artifactLocation": {
+                                    "uri": "secure_fw/partitions/crypto/crypto_cipher.c"
+                                },
+                                "region": {
+                                    "startLine": 158,
+                                    "endLine": 164,
+                                    "snippet": {
+                                        "text": "const uint8_t *input = in_vec[1].base;\n        size_t input_length = in_vec[1].len;\n        uint8_t *output = out_vec[0].base;\n        size_t output_size = out_vec[0].len;\n\n        status = psa_cipher_encrypt(library_key, iov->alg, input, input_length,\n                                    output, output_size, &out_vec[0].len);"
+                                    }
+                                },
+                                "contextRegion": {
+                                    "startLine": 155,
+                                    "endLine": 161,
+                                    "snippet": {
+                                        "text": "#if CRYPTO_SINGLE_PART_FUNCS_DISABLED\n        return PSA_ERROR_NOT_SUPPORTED;\n#else\n        const uint8_t *input = in_vec[1].base;\n        size_t input_length = in_vec[1].len;\n        uint8_t *output = out_vec[0].base;\n        size_t output_size = out_vec[0].len;"
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    "partialFingerprints": {
+                        "primaryLocationLineHash": "c9e056de10ea6d9e270c7f2b551374e9a42b72659134b2905b546b5fff0f03d5",
+                        "metisAnchor/v1": "14c0079b617cc5e4157a6a3497b56058aa0ae812beb4a9ea2ef355743f701482"
+                    },
+                    "properties": {
+                        "metisFindingId": "3b7a7fb5638f43e5a5934ac424486e86",
+                        "cwe": "CWE-20",
+                        "severity": "Medium",
+                        "reasoning": "The interface validates vector bases and lengths for the CAN_DO and operation-handle setup/finish/abort paths, but the single-part encrypt path reads in_vec[1] and out_vec[0] directly and passes their base pointers and lengths to psa_cipher_encrypt without checking that the expected vectors are present, that nonzero lengths have non-NULL bases, or that the output vector is writable. In a firmware service boundary, these vectors are derived from the caller message; if malformed vectors can reach this function, the crypto backend may dereference NULL or otherwise invalid service-mapped pointers. Whole-program IPC validation may provide additional guarantees, so the reachability depends on surrounding TF-M vector validation, but this source file itself does not enforce the preconditions it relies on.",
+                        "mitigation": "Validate the expected in/out vector count and each used vector before calling PSA routines. Reject NULL bases for nonzero input/output sizes, require adequate output buffer sizes where known, and centralize validation for all SIDs so backend calls never receive malformed pointers from the service boundary.",
+                        "confidence": 0.72,
+                        "anchor": {
+                            "file_path": "secure_fw/partitions/crypto/crypto_cipher.c",
+                            "start_line": 158,
+                            "end_line": 164,
+                            "start_col": 0,
+                            "end_col": 74,
+                            "start_byte": 4149,
+                            "end_byte": 4484,
+                            "symbol": "secure_fw/partitions/crypto/crypto_cipher.c::tfm_crypto_cipher_interface",
+                            "kind": "range",
+                            "content_hash": "32c70af1922d6090",
+                            "confidence": "exact"
+                        },
+                        "metisTriaged": true,
+                        "metisTriageStatus": "valid",
+                        "metisTriageReason": "Verdict: valid, the reachable cipher encrypt path passes caller-derived vector entries to the PSA cipher routine without validating the expected input/output vector entries in that path. Evidence: the service call builds vectors from message sizes and only requires at least in_vec[0], the dispatcher only checks in_vec[0].len before dispatching CIPHER, and the encrypt branch reads in_vec[1]/out_vec[0] and calls psa_cipher_encrypt without local entry checks at secure_fw/partitions/crypto/crypto_init.c:263, secure_fw/partitions/crypto/crypto_init.c:278, secure_fw/partitions/crypto/crypto_init.c:291, secure_fw/partitions/crypto/crypto_init.c:299, secure_fw/partitions/crypto/crypto_init.c:209, secure_fw/partitions/crypto/crypto_init.c:239, secure_fw/partitions/crypto/crypto_cipher.c:154, secure_fw/partitions/crypto/crypto_cipher.c:158, secure_fw/partitions/crypto/crypto_cipher.c:163. Gap: none.",
+                        "metisTriageTimestamp": "2026-09-22T15:28:37.568146+00:00",
+                        "metisEvidenceRequirements": [
+                            "local_context",
+                            "symbol_definition",
+                            "use_site"
+                        ],
+                        "metisEvidenceCoverage": {
+                            "local_context": 2,
+                            "symbol_definition": 7,
+                            "use_site": 12
+                        },
+                        "metisMissingEvidence": []
+                    }
+                },
+                {
+                    "ruleId": "AI001",
+                    "level": "warning",
+                    "message": {
+                        "id": "AI001",
+                        "arguments": [
+                            "Unvalidated decrypt vectors are forwarded across the service boundary"
+                        ],
+                        "text": "Unvalidated decrypt vectors are forwarded across the service boundary"
+                    },
+                    "locations": [
+                        {
+                            "physicalLocation": {
+                                "artifactLocation": {
+                                    "uri": "secure_fw/partitions/crypto/crypto_cipher.c"
+                                },
+                                "region": {
+                                    "startLine": 176,
+                                    "endLine": 182,
+                                    "snippet": {
+                                        "text": "const uint8_t *input = in_vec[1].base;\n        size_t input_length = in_vec[1].len;\n        uint8_t *output = out_vec[0].base;\n        size_t output_size = out_vec[0].len;\n\n        status = psa_cipher_decrypt(library_key, iov->alg, input, input_length,\n                                    output, output_size, &out_vec[0].len);"
+                                    }
+                                },
+                                "contextRegion": {
+                                    "startLine": 173,
+                                    "endLine": 179,
+                                    "snippet": {
+                                        "text": "#if CRYPTO_SINGLE_PART_FUNCS_DISABLED\n        return PSA_ERROR_NOT_SUPPORTED;\n#else\n        const uint8_t *input = in_vec[1].base;\n        size_t input_length = in_vec[1].len;\n        uint8_t *output = out_vec[0].base;\n        size_t output_size = out_vec[0].len;"
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    "partialFingerprints": {
+                        "primaryLocationLineHash": "8f803b71d5feb64d129e5614665b172c7b3bfe8738a1700cf6ab961aff32c9df",
+                        "metisAnchor/v1": "4aee92c43c3106352137d128a7f91e2291d508606352dbdb261cfa0d811425ae"
+                    },
+                    "properties": {
+                        "metisFindingId": "872cfdd26f03481183218fb4eac8f9c3",
+                        "cwe": "CWE-20",
+                        "severity": "Medium",
+                        "reasoning": "The decrypt path similarly trusts in_vec[1] and out_vec[0] without local validation before passing them to psa_cipher_decrypt and before allowing the backend to write the resulting length through &out_vec[0].len. If an untrusted client can supply a NULL or invalid base with a nonzero length, or an unexpected vector layout, this can result in backend memory faults or writes through invalid buffers in the secure crypto partition. The surrounding framework may validate PSA vectors before dispatch, so this is a source-level candidate rather than a confirmed reachable crash.",
+                        "mitigation": "Add explicit per-SID validation of all required input and output vectors prior to use, including NULL/length consistency and minimum output-vector availability. Return PSA_ERROR_PROGRAMMER_ERROR or PSA_ERROR_INVALID_ARGUMENT on malformed message vectors before invoking the PSA library.",
+                        "confidence": 0.72,
+                        "anchor": {
+                            "file_path": "secure_fw/partitions/crypto/crypto_cipher.c",
+                            "start_line": 176,
+                            "end_line": 182,
+                            "start_col": 0,
+                            "end_col": 74,
+                            "start_byte": 4733,
+                            "end_byte": 5068,
+                            "symbol": "secure_fw/partitions/crypto/crypto_cipher.c::tfm_crypto_cipher_interface",
+                            "kind": "range",
+                            "content_hash": "aa14c35bfe382b92",
+                            "confidence": "exact"
+                        },
+                        "metisTriaged": true,
+                        "metisTriageStatus": "valid",
+                        "metisTriageReason": "Verdict: the decrypt handler forwards in_vec[1] and out_vec[0] to psa_cipher_decrypt without local NULL/length validation. Evidence: tfm_crypto_cipher_interface derives input/output directly from vectors and calls psa_cipher_decrypt with &out_vec[0].len at secure_fw/partitions/crypto/crypto_cipher.c:176, secure_fw/partitions/crypto/crypto_cipher.c:178, and secure_fw/partitions/crypto/crypto_cipher.c:181; the same function shows an explicit vector validation pattern for another SID at secure_fw/partitions/crypto/crypto_cipher.c:143. Gap: none.",
+                        "metisTriageTimestamp": "2026-09-22T15:28:48.278575+00:00",
+                        "metisEvidenceRequirements": [
+                            "local_context",
+                            "symbol_definition",
+                            "use_site"
+                        ],
+                        "metisEvidenceCoverage": {
+                            "local_context": 2,
+                            "symbol_definition": 7,
+                            "use_site": 12
+                        },
+                        "metisMissingEvidence": []
+                    }
+                },
+                {
+                    "ruleId": "AI001",
+                    "level": "warning",
+                    "message": {
+                        "id": "AI001",
+                        "arguments": [
+                            "Failed encrypt/decrypt setup may release using an uninitialized or caller-seeded handle value"
+                        ],
+                        "text": "Failed encrypt/decrypt setup may release using an uninitialized or caller-seeded handle value"
+                    },
+                    "locations": [
+                        {
+                            "physicalLocation": {
+                                "artifactLocation": {
+                                    "uri": "secure_fw/partitions/crypto/crypto_cipher.c"
+                                },
+                                "region": {
+                                    "startLine": 192,
+                                    "endLine": 199,
+                                    "snippet": {
+                                        "text": "p_handle = out_vec[0].base;\n        if ((out_vec[0].base == NULL) || (out_vec[0].len < sizeof(uint32_t))) {\n            return PSA_ERROR_PROGRAMMER_ERROR;\n        }\n        *p_handle = iov->op_handle;\n        status = tfm_crypto_operation_alloc(TFM_CRYPTO_CIPHER_OPERATION,\n                                            out_vec[0].base,\n                                            (void **)&operation);"
+                                    }
+                                },
+                                "contextRegion": {
+                                    "startLine": 189,
+                                    "endLine": 195,
+                                    "snippet": {
+                                        "text": "\n    if ((sid == TFM_CRYPTO_CIPHER_ENCRYPT_SETUP_SID) ||\n        (sid == TFM_CRYPTO_CIPHER_DECRYPT_SETUP_SID)) {\n        p_handle = out_vec[0].base;\n        if ((out_vec[0].base == NULL) || (out_vec[0].len < sizeof(uint32_t))) {\n            return PSA_ERROR_PROGRAMMER_ERROR;\n        }"
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    "partialFingerprints": {
+                        "primaryLocationLineHash": "8e9c6a308b33b1f1580198b77538545153db0c367b26ea05c97c2581d6efcbd4",
+                        "metisAnchor/v1": "caf6a2f331f5264144a9c14708365c39739fc7c5383abb2f5a0c070762a9629d"
+                    },
+                    "properties": {
+                        "metisFindingId": "0c5903ec4ef54824af6aca5bc7b2561b",
+                        "cwe": "CWE-672",
+                        "severity": "Medium",
+                        "reasoning": "For setup requests, the code copies the caller-supplied iov->op_handle into out_vec[0] before allocating a new operation, and p_handle remains pointed at that output buffer. If allocation succeeds but psa_cipher_encrypt_setup or psa_cipher_decrypt_setup later fails, control reaches release_operation_and_return, which calls tfm_crypto_operation_release(p_handle). This is safe only if tfm_crypto_operation_alloc always overwrites out_vec[0] with the allocated handle before any later failure and never leaves the caller-supplied value intact. That invariant is not established in this file. If it is violated in some allocation/error configuration, a failed setup could attempt to release an attacker-specified or stale handle, potentially corrupting operation lifetime or freeing another operation slot.",
+                        "mitigation": "Avoid seeding the output handle with caller-controlled iov->op_handle on setup. Initialize the out handle to a known invalid value, track whether allocation actually succeeded and which handle was allocated, and release only that known allocated handle. Alternatively have tfm_crypto_operation_alloc return the handle in a local variable and copy it to out_vec[0] only after successful setup.",
+                        "confidence": 0.62,
+                        "anchor": {
+                            "file_path": "secure_fw/partitions/crypto/crypto_cipher.c",
+                            "start_line": 192,
+                            "end_line": 199,
+                            "start_col": 0,
+                            "end_col": 65,
+                            "start_byte": 5297,
+                            "end_byte": 5705,
+                            "symbol": "secure_fw/partitions/crypto/crypto_cipher.c::tfm_crypto_cipher_interface",
+                            "kind": "range",
+                            "content_hash": "5d3d191cadc8f233",
+                            "confidence": "exact"
+                        },
+                        "metisTriaged": true,
+                        "metisTriageStatus": "invalid",
+                        "metisTriageReason": "Verdict: The reported release of an uninitialized or caller-seeded handle is contradicted by the allocation contract. Evidence: setup seeds `*p_handle` from `iov->op_handle` before calling `tfm_crypto_operation_alloc`, but allocation rejects any non-invalid input handle and on success writes the allocated handle before returning success; only after successful allocation can setup failure reach `tfm_crypto_operation_release(p_handle)` at `secure_fw/partitions/crypto/crypto_cipher.c:196`, `secure_fw/partitions/crypto/crypto_cipher.c:197`, `secure_fw/partitions/crypto/crypto_cipher.c:256`, `secure_fw/partitions/crypto/crypto_cipher.c:258`, `secure_fw/partitions/crypto/crypto_cipher.c:321`, `secure_fw/partitions/crypto/crypto_alloc.c:89`, `secure_fw/partitions/crypto/crypto_alloc.c:90`, `secure_fw/partitions/crypto/crypto_alloc.c:110`, and `secure_fw/partitions/crypto/crypto_alloc.c:112`. Gap: none.",
+                        "metisTriageTimestamp": "2026-09-22T15:28:08.723594+00:00",
+                        "metisEvidenceRequirements": [
+                            "local_context",
+                            "symbol_definition",
+                            "use_site",
+                            "indirection_resolution"
+                        ],
+                        "metisEvidenceCoverage": {
+                            "local_context": 2,
+                            "symbol_definition": 3,
+                            "use_site": 12,
+                            "indirection_resolution": 1
+                        },
+                        "metisMissingEvidence": []
+                    }
+                },
+                {
+                    "ruleId": "AI001",
+                    "level": "warning",
+                    "message": {
+                        "id": "AI001",
+                        "arguments": [
+                            "Multipart cipher update uses caller-controlled vectors without validation"
+                        ],
+                        "text": "Multipart cipher update uses caller-controlled vectors without validation"
+                    },
+                    "locations": [
+                        {
+                            "physicalLocation": {
+                                "artifactLocation": {
+                                    "uri": "secure_fw/partitions/crypto/crypto_cipher.c"
+                                },
+                                "region": {
+                                    "startLine": 272,
+                                    "endLine": 278,
+                                    "snippet": {
+                                        "text": "const uint8_t *input = in_vec[1].base;\n        size_t input_length = in_vec[1].len;\n        unsigned char *output = out_vec[0].base;\n        size_t output_size = out_vec[0].len;\n\n        status = psa_cipher_update(operation, input, input_length,\n                                   output, output_size, &out_vec[0].len);"
+                                    }
+                                },
+                                "contextRegion": {
+                                    "startLine": 269,
+                                    "endLine": 275,
+                                    "snippet": {
+                                        "text": "    break;\n    case TFM_CRYPTO_CIPHER_UPDATE_SID:\n    {\n        const uint8_t *input = in_vec[1].base;\n        size_t input_length = in_vec[1].len;\n        unsigned char *output = out_vec[0].base;\n        size_t output_size = out_vec[0].len;"
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    "partialFingerprints": {
+                        "primaryLocationLineHash": "5ed665d743698d5c3f2fc526f2bd842abebbfa7816fb00c8b8cba4961590d7c2",
+                        "metisAnchor/v1": "9b9dea6ac6dd6437bfa9f07912691685e32af386c95f5f1e5faaef84a1e3e6b0"
+                    },
+                    "properties": {
+                        "metisFindingId": "292c22f8bc094daa9d6ed8dc503d646c",
+                        "cwe": "CWE-20",
+                        "severity": "Medium",
+                        "reasoning": "After looking up a multipart operation, the update path forwards input and output vector pointers and lengths directly to psa_cipher_update. Unlike the handle-related paths, there is no local check that in_vec[1].base and out_vec[0].base are valid for the advertised lengths. A malformed update request at the partition boundary could therefore cause the backend to read or write through invalid pointers, potentially faulting the secure service and causing denial of service. Additional dispatcher-side vector validation may reduce or eliminate exploitability, but the assumptions are not visible in this file.",
+                        "mitigation": "Validate vector bases and lengths for TFM_CRYPTO_CIPHER_UPDATE_SID before operation lookup or before calling psa_cipher_update. Consider helper functions that enforce the vector contract for each SID and ensure zero-length buffers are handled consistently with PSA requirements.",
+                        "confidence": 0.7,
+                        "anchor": {
+                            "file_path": "secure_fw/partitions/crypto/crypto_cipher.c",
+                            "start_line": 272,
+                            "end_line": 278,
+                            "start_col": 0,
+                            "end_col": 73,
+                            "start_byte": 8309,
+                            "end_byte": 8636,
+                            "symbol": "secure_fw/partitions/crypto/crypto_cipher.c::tfm_crypto_cipher_interface",
+                            "kind": "range",
+                            "content_hash": "4bfd5021e4cbd728",
+                            "confidence": "exact"
+                        },
+                        "metisTriaged": true,
+                        "metisTriageStatus": "inconclusive",
+                        "metisTriageReason": "Verdict: Inconclusive; the update block forwards vector fields to psa_cipher_update, but the partition-boundary vector source is an initialization wrapper whose mapping guarantees are unresolved. Evidence: crypto_cipher.c reads in_vec[1] and out_vec[0] then calls psa_cipher_update at secure_fw/partitions/crypto/crypto_cipher.c:272, secure_fw/partitions/crypto/crypto_cipher.c:274, and secure_fw/partitions/crypto/crypto_cipher.c:277, while crypto_init.c initializes vectors before dispatch via mapping or scratch-buffer paths at secure_fw/partitions/crypto/crypto_init.c:69, secure_fw/partitions/crypto/crypto_init.c:73, secure_fw/partitions/crypto/crypto_init.c:82, secure_fw/partitions/crypto/crypto_init.c:165, secure_fw/partitions/crypto/crypto_init.c:168, secure_fw/partitions/crypto/crypto_init.c:177, secure_fw/partitions/crypto/crypto_init.c:188, secure_fw/partitions/crypto/crypto_init.c:291, and secure_fw/partitions/crypto/crypto_init.c:299. Gap: psa_map_invec/psa_map_outvec behavior and the active PSA_FRAMEWORK_HAS_MM_IOVEC branch are not resolved by the provided evidence.",
+                        "metisTriageTimestamp": "2026-09-22T15:29:02.654324+00:00",
+                        "metisEvidenceRequirements": [
+                            "local_context",
+                            "symbol_definition",
+                            "use_site"
+                        ],
+                        "metisEvidenceCoverage": {
+                            "local_context": 2,
+                            "symbol_definition": 7,
+                            "use_site": 12
+                        },
+                        "metisMissingEvidence": []
+                    }
+                },
+                {
+                    "ruleId": "AI001",
+                    "level": "warning",
+                    "message": {
+                        "id": "AI001",
+                        "arguments": [
+                            "Operation slot can be leaked on cipher finish failure"
+                        ],
+                        "text": "Operation slot can be leaked on cipher finish failure"
+                    },
+                    "locations": [
+                        {
+                            "physicalLocation": {
+                                "artifactLocation": {
+                                    "uri": "secure_fw/partitions/crypto/crypto_cipher.c"
+                                },
+                                "region": {
+                                    "startLine": 298,
+                                    "endLine": 305,
+                                    "snippet": {
+                                        "text": "status = psa_cipher_finish(operation,\n                                   output, output_size, &out_vec[1].len);\n        if (status == PSA_SUCCESS) {\n            /* In case of success automatically release the operation */\n            goto release_operation_and_return;\n        } else {\n            out_vec[1].len = 0;\n        }"
+                                    }
+                                },
+                                "contextRegion": {
+                                    "startLine": 295,
+                                    "endLine": 301,
+                                    "snippet": {
+                                        "text": "        uint8_t *output = out_vec[1].base;\n        size_t output_size = out_vec[1].len;\n\n        status = psa_cipher_finish(operation,\n                                   output, output_size, &out_vec[1].len);\n        if (status == PSA_SUCCESS) {\n            /* In case of success automatically release the operation */"
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    "partialFingerprints": {
+                        "primaryLocationLineHash": "89eaf83c1a3953dab32b2b905af3bba9753c90216b7e0e79dbdd004dfb97a2f9",
+                        "metisAnchor/v1": "04271b3693f34430f4d168297a92b511f0ee3bd6efbdb99f6be7730c1e130718"
+                    },
+                    "properties": {
+                        "metisFindingId": "a9de897741f84457a0f0715d8bedf22d",
+                        "cwe": "CWE-772",
+                        "severity": "Medium",
+                        "reasoning": "On successful finish, the TF-M multipart operation slot is released, and on update failure the code comments that the PSA operation aborts and explicitly releases the slot. In contrast, if psa_cipher_finish returns an error, this path only clears out_vec[1].len and then returns status without releasing the TF-M operation slot. Depending on PSA semantics for cipher_finish failures and whether callers can repeatedly create operations that fail at finish (for example through insufficient output buffers or invalid padding), a client may exhaust the finite multipart operation table in the secure crypto partition, causing denial of service to itself or other clients sharing the pool. The precise cross-client impact depends on operation-table ownership and quota enforcement outside this file.",
+                        "mitigation": "On finish failure states that invalidate or abort the underlying PSA operation, release the TF-M operation slot just as the update-error path does. If some finish errors are recoverable by contract, distinguish recoverable output-buffer-too-small cases from terminal failures and document/handle the lifetime accordingly, possibly requiring explicit abort for recoverable cases with quota protections.",
+                        "confidence": 0.78,
+                        "anchor": {
+                            "file_path": "secure_fw/partitions/crypto/crypto_cipher.c",
+                            "start_line": 298,
+                            "end_line": 305,
+                            "start_col": 0,
+                            "end_col": 9,
+                            "start_byte": 9308,
+                            "end_byte": 9643,
+                            "symbol": "secure_fw/partitions/crypto/crypto_cipher.c::tfm_crypto_cipher_interface",
+                            "kind": "range",
+                            "content_hash": "6fc0237073e17ce1",
+                            "confidence": "exact"
+                        },
+                        "metisTriaged": true,
+                        "metisTriageStatus": "valid",
+                        "metisTriageReason": "Verdict: cipher finish failure leaves the TF-M multipart operation slot allocated instead of taking the release path. Evidence: finish success jumps to release at secure_fw/partitions/crypto/crypto_cipher.c:300 and secure_fw/partitions/crypto/crypto_cipher.c:302, while failure only clears output length at secure_fw/partitions/crypto/crypto_cipher.c:303 and secure_fw/partitions/crypto/crypto_cipher.c:304 before returning at secure_fw/partitions/crypto/crypto_cipher.c:317; the release label calls tfm_crypto_operation_release at secure_fw/partitions/crypto/crypto_cipher.c:319 and secure_fw/partitions/crypto/crypto_cipher.c:321, and release is what marks a finite operation slot not in use at secure_fw/partitions/crypto/crypto_alloc.c:50, secure_fw/partitions/crypto/crypto_alloc.c:141, and secure_fw/partitions/crypto/crypto_alloc.c:142. Gap: none.",
+                        "metisTriageTimestamp": "2026-09-22T15:28:37.768772+00:00",
+                        "metisEvidenceRequirements": [
+                            "local_context",
+                            "symbol_definition",
+                            "use_site",
+                            "indirection_resolution"
+                        ],
+                        "metisEvidenceCoverage": {
+                            "local_context": 2,
+                            "symbol_definition": 5,
+                            "use_site": 12,
+                            "indirection_resolution": 1
+                        },
+                        "metisMissingEvidence": []
+                    }
+                },
+                {
+                    "ruleId": "AI001",
+                    "level": "warning",
+                    "message": {
+                        "id": "AI001",
+                        "arguments": [
+                            "Dereference of unvalidated primary input vector base before null/length checks"
+                        ],
+                        "text": "Dereference of unvalidated primary input vector base before null/length checks"
+                    },
+                    "locations": [
+                        {
+                            "physicalLocation": {
+                                "artifactLocation": {
+                                    "uri": "secure_fw/partitions/crypto/crypto_hash.c"
+                                },
+                                "region": {
+                                    "startLine": 91,
+                                    "endLine": 95,
+                                    "snippet": {
+                                        "text": "const struct tfm_crypto_pack_iovec *iov = in_vec[0].base;\npsa_status_t status = PSA_ERROR_NOT_SUPPORTED;\npsa_hash_operation_t *operation = NULL;\nuint32_t *p_handle = NULL;\nenum tfm_crypto_func_sid_t sid = (enum tfm_crypto_func_sid_t)iov->function_id;"
+                                    }
+                                },
+                                "contextRegion": {
+                                    "startLine": 88,
+                                    "endLine": 94,
+                                    "snippet": {
+                                        "text": "psa_status_t tfm_crypto_hash_interface(psa_invec in_vec[],\n                                       psa_outvec out_vec[])\n{\n    const struct tfm_crypto_pack_iovec *iov = in_vec[0].base;\n    psa_status_t status = PSA_ERROR_NOT_SUPPORTED;\n    psa_hash_operation_t *operation = NULL;\n    uint32_t *p_handle = NULL;"
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    "partialFingerprints": {
+                        "primaryLocationLineHash": "b5242e0e1d9756d76a0a343dd0e0a1cd6bde0bafbeee992f86586d1b60cb7d77",
+                        "metisAnchor/v1": "cc586260b23c26c48d6aca40600a76e5a9a755cbd46e783febf0ad5d2c5cb32a"
+                    },
+                    "properties": {
+                        "metisFindingId": "2060956176b248f7ac8e30dbfc16e378",
+                        "cwe": "CWE-476",
+                        "severity": "Medium",
+                        "reasoning": "The interface treats in_vec as a caller-provided PSA input vector and immediately dereferences in_vec[0].base via iov->function_id before validating that in_vec[0].base is non-NULL and that in_vec[0].len is at least sizeof(struct tfm_crypto_pack_iovec) or otherwise large enough to contain function_id and alg/op_handle fields used later. If a malformed caller message can reach this shim with a NULL, short, or invalid first vector, the secure partition may read outside the supplied message or fault before returning a PSA error. The source file does not show any prior validation of in_vec[0], so this is a privilege-boundary validation-order candidate.",
+                        "mitigation": "Before assigning or using iov fields, validate in_vec itself if applicable, in_vec[0].base != NULL, and in_vec[0].len >= sizeof(struct tfm_crypto_pack_iovec) or the minimum required layout for all accessed fields. Return PSA_ERROR_PROGRAMMER_ERROR on malformed vectors.",
+                        "confidence": 0.82,
+                        "anchor": {
+                            "file_path": "secure_fw/partitions/crypto/crypto_hash.c",
+                            "start_line": 91,
+                            "end_line": 95,
+                            "start_col": 0,
+                            "end_col": 82,
+                            "start_byte": 2027,
+                            "end_byte": 2297,
+                            "symbol": "secure_fw/partitions/crypto/crypto_hash.c::tfm_crypto_hash_interface",
+                            "kind": "range",
+                            "content_hash": "985646a42752cc01",
+                            "confidence": "exact"
+                        },
+                        "metisTriaged": true,
+                        "metisTriageStatus": "valid",
+                        "metisTriageReason": "Verdict: the reported direct dereference exists in the hash interface, but the concrete caller initializes and length-checks the first input vector before dispatch, so the local unsafe order is guarded upstream only for this path. Evidence: tfm_crypto_call_srv rejects missing first input, reads exactly sizeof(iov), sets in_vec[0].base to a local iov and in_vec[0].len to sizeof(struct tfm_crypto_pack_iovec), then dispatcher checks that length before calling tfm_crypto_hash_interface, where iov->function_id is dereferenced. Gap: none.",
+                        "metisTriageTimestamp": "2026-09-22T15:28:41.016172+00:00",
+                        "metisEvidenceRequirements": [
+                            "local_context",
+                            "symbol_definition",
+                            "use_site"
+                        ],
+                        "metisEvidenceCoverage": {
+                            "local_context": 2,
+                            "symbol_definition": 6,
+                            "use_site": 12
+                        },
+                        "metisMissingEvidence": []
+                    }
+                },
+                {
+                    "ruleId": "AI001",
+                    "level": "warning",
+                    "message": {
+                        "id": "AI001",
+                        "arguments": [
+                            "Unvalidated data and output vector pointers are forwarded to PSA hash routines"
+                        ],
+                        "text": "Unvalidated data and output vector pointers are forwarded to PSA hash routines"
+                    },
+                    "locations": [
+                        {
+                            "physicalLocation": {
+                                "artifactLocation": {
+                                    "uri": "secure_fw/partitions/crypto/crypto_hash.c"
+                                },
+                                "region": {
+                                    "startLine": 112,
+                                    "endLine": 118,
+                                    "snippet": {
+                                        "text": "const uint8_t *input = in_vec[1].base;\nsize_t input_length = in_vec[1].len;\nuint8_t *hash = out_vec[0].base;\nsize_t hash_size = out_vec[0].len;\n\nstatus = psa_hash_compute(iov->alg, input, input_length,\n                          hash, hash_size, &out_vec[0].len);"
+                                    }
+                                },
+                                "contextRegion": {
+                                    "startLine": 109,
+                                    "endLine": 115,
+                                    "snippet": {
+                                        "text": "#if CRYPTO_SINGLE_PART_FUNCS_DISABLED\n        return PSA_ERROR_NOT_SUPPORTED;\n#else\n        const uint8_t *input = in_vec[1].base;\n        size_t input_length = in_vec[1].len;\n        uint8_t *hash = out_vec[0].base;\n        size_t hash_size = out_vec[0].len;"
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    "partialFingerprints": {
+                        "primaryLocationLineHash": "a747f695b73b53cc28baafe38c51ab747b1585647be19c5d2cad4f24cb09b66d",
+                        "metisAnchor/v1": "72f59b04f79a70f52d2662fa3f06982fb07db6fecf6bb3affa5d814e656b06c2"
+                    },
+                    "properties": {
+                        "metisFindingId": "056e886d1147493fa2f479bd9a796999",
+                        "cwe": "CWE-20",
+                        "severity": "Medium",
+                        "reasoning": "For the single-part hash compute operation, this shim forwards caller-controlled in_vec[1].base and out_vec[0].base to psa_hash_compute without checking that a nonzero input length has a non-NULL input pointer, or that the output vector is non-NULL and large enough for a hash result before passing it into the crypto library. PSA APIs generally validate parameters, but this file is the secure service boundary and also passes &out_vec[0].len for the callee to write. If lower layers or configurations assume the IPC layer performed pointer validation, malformed vectors could cause a fault or unintended memory access in secure code.",
+                        "mitigation": "Validate vector bases consistently at the shim boundary: require input != NULL when input_length > 0, hash != NULL when hash_size > 0 or when an output is required, and optionally pre-check hash_size against PSA_HASH_LENGTH(iov->alg) for supported algorithms before calling psa_hash_compute.",
+                        "confidence": 0.68,
+                        "anchor": {
+                            "file_path": "secure_fw/partitions/crypto/crypto_hash.c",
+                            "start_line": 112,
+                            "end_line": 118,
+                            "start_col": 0,
+                            "end_col": 68,
+                            "start_byte": 2741,
+                            "end_byte": 3051,
+                            "symbol": "secure_fw/partitions/crypto/crypto_hash.c::tfm_crypto_hash_interface",
+                            "kind": "range",
+                            "content_hash": "373649cbe17922ae",
+                            "confidence": "exact"
+                        },
+                        "metisTriaged": true,
+                        "metisTriageStatus": "valid",
+                        "metisTriageReason": "Verdict: valid because the shim copies caller-supplied vector bases and lengths directly into psa_hash_compute, while the resolved PSA implementation only uses assertions for required non-NULL/nonzero output parameters and returns success before touching output when input_length is zero. Evidence: secure_fw/partitions/crypto/crypto_hash.c:112-118 forwards in_vec[1].base/len and out_vec[0].base/len plus &out_vec[0].len without local checks, and lib/ext/thin-psa-crypto-core/thin_psa_crypto_core.c:398-407 shows psa_hash_compute returns PSA_SUCCESS for zero input_length then otherwise relies on assert(input/hash/hash_size/hash_length) before the driver call. Gap: none.",
+                        "metisTriageTimestamp": "2026-09-22T15:28:35.063454+00:00",
+                        "metisEvidenceRequirements": [
+                            "local_context",
+                            "symbol_definition",
+                            "use_site"
+                        ],
+                        "metisEvidenceCoverage": {
+                            "local_context": 2,
+                            "symbol_definition": 8,
+                            "use_site": 11
+                        },
+                        "metisMissingEvidence": []
+                    }
+                },
+                {
+                    "ruleId": "AI001",
+                    "level": "note",
+                    "message": {
+                        "id": "AI001",
+                        "arguments": [
+                            "Unvalidated input vectors are forwarded to hash compare operation"
+                        ],
+                        "text": "Unvalidated input vectors are forwarded to hash compare operation"
+                    },
+                    "locations": [
+                        {
+                            "physicalLocation": {
+                                "artifactLocation": {
+                                    "uri": "secure_fw/partitions/crypto/crypto_hash.c"
+                                },
+                                "region": {
+                                    "startLine": 130,
+                                    "endLine": 136,
+                                    "snippet": {
+                                        "text": "const uint8_t *input = in_vec[1].base;\nsize_t input_length = in_vec[1].len;\nconst uint8_t *hash = in_vec[2].base;\nsize_t hash_length = in_vec[2].len;\n\nreturn psa_hash_compare(iov->alg, input, input_length,\n                        hash, hash_length);"
+                                    }
+                                },
+                                "contextRegion": {
+                                    "startLine": 127,
+                                    "endLine": 133,
+                                    "snippet": {
+                                        "text": "#if CRYPTO_SINGLE_PART_FUNCS_DISABLED\n        return PSA_ERROR_NOT_SUPPORTED;\n#else\n        const uint8_t *input = in_vec[1].base;\n        size_t input_length = in_vec[1].len;\n        const uint8_t *hash = in_vec[2].base;\n        size_t hash_length = in_vec[2].len;"
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    "partialFingerprints": {
+                        "primaryLocationLineHash": "1ba02517399baa474e31cdab6dff83bde473dd053c7e73c2b021107289a1ea23",
+                        "metisAnchor/v1": "6a6f9398ad2e0f18c8a6d64a3b000d2a0d583aee730a01f403db50f67eaad780"
+                    },
+                    "properties": {
+                        "metisFindingId": "70ff2e92cf914f9dac9bd6478839194e",
+                        "cwe": "CWE-20",
+                        "severity": "Low",
+                        "reasoning": "The hash compare path reads vector metadata for in_vec[1] and in_vec[2] and forwards their bases and lengths to psa_hash_compare without local validation that the bases are non-NULL for nonzero lengths or that the hash buffer is present. Because this function is an API shim receiving PSA vectors, malformed caller-controlled vectors may be able to trigger secure-side faults or out-of-bounds reads in lower layers if validation is not uniformly performed elsewhere. The reviewed file provides no evidence of such earlier checks.",
+                        "mitigation": "Add explicit validation before forwarding buffers: check that each base is non-NULL when its length is nonzero, and reject malformed vectors with PSA_ERROR_PROGRAMMER_ERROR. Consider validating hash_length against the expected digest length for iov->alg where appropriate.",
+                        "confidence": 0.64,
+                        "anchor": {
+                            "file_path": "secure_fw/partitions/crypto/crypto_hash.c",
+                            "start_line": 130,
+                            "end_line": 136,
+                            "start_col": 0,
+                            "end_col": 51,
+                            "start_byte": 3298,
+                            "end_byte": 3595,
+                            "symbol": "secure_fw/partitions/crypto/crypto_hash.c::tfm_crypto_hash_interface",
+                            "kind": "range",
+                            "content_hash": "4c0874c23d784579",
+                            "confidence": "exact"
+                        },
+                        "metisTriaged": true,
+                        "metisTriageStatus": "valid",
+                        "metisTriageReason": "Verdict: The finding is valid because the hash-compare path forwards in_vec[1] and in_vec[2] bases and lengths directly to psa_hash_compare without local validation. Evidence: tfm_crypto_hash_interface copies input/hash pointers and lengths from in_vec[1]/in_vec[2] at secure_fw/partitions/crypto/crypto_hash.c:130, secure_fw/partitions/crypto/crypto_hash.c:131, secure_fw/partitions/crypto/crypto_hash.c:132, secure_fw/partitions/crypto/crypto_hash.c:133 and immediately calls psa_hash_compare at secure_fw/partitions/crypto/crypto_hash.c:135; the dispatcher only validates in_vec[0].len before dispatching hash requests at secure_fw/partitions/crypto/crypto_init.c:209 and secure_fw/partitions/crypto/crypto_init.c:236. Gap: none.",
+                        "metisTriageTimestamp": "2026-09-22T15:28:46.820946+00:00",
+                        "metisEvidenceRequirements": [
+                            "local_context",
+                            "symbol_definition",
+                            "use_site"
+                        ],
+                        "metisEvidenceCoverage": {
+                            "local_context": 2,
+                            "symbol_definition": 8,
+                            "use_site": 11
+                        },
+                        "metisMissingEvidence": []
+                    }
+                },
+                {
+                    "ruleId": "AI001",
+                    "level": "note",
+                    "message": {
+                        "id": "AI001",
+                        "arguments": [
+                            "Operation handle is written before allocation success, potentially exposing stale or client-chosen handles on setup failure"
+                        ],
+                        "text": "Operation handle is written before allocation success, potentially exposing stale or client-chosen handles on setup failure"
+                    },
+                    "locations": [
+                        {
+                            "physicalLocation": {
+                                "artifactLocation": {
+                                    "uri": "secure_fw/partitions/crypto/crypto_hash.c"
+                                },
+                                "region": {
+                                    "startLine": 141,
+                                    "endLine": 148,
+                                    "snippet": {
+                                        "text": "p_handle = out_vec[0].base;\nif ((out_vec[0].base == NULL) || (out_vec[0].len < sizeof(uint32_t))) {\n    return PSA_ERROR_PROGRAMMER_ERROR;\n}\n*p_handle = iov->op_handle;\nstatus = tfm_crypto_operation_alloc(TFM_CRYPTO_HASH_OPERATION,\n                                    out_vec[0].base,\n                                    (void **)&operation);"
+                                    }
+                                },
+                                "contextRegion": {
+                                    "startLine": 138,
+                                    "endLine": 144,
+                                    "snippet": {
+                                        "text": "    }\n\n    if (sid == TFM_CRYPTO_HASH_SETUP_SID) {\n        p_handle = out_vec[0].base;\n        if ((out_vec[0].base == NULL) || (out_vec[0].len < sizeof(uint32_t))) {\n            return PSA_ERROR_PROGRAMMER_ERROR;\n        }"
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    "partialFingerprints": {
+                        "primaryLocationLineHash": "fa38a839c1755679e7e9f0f1e390a611ee556809ab7be1b3be2eef7855a8a1f0",
+                        "metisAnchor/v1": "9d465664c8127686031f0717d896af1513ac92be6e4017e0f7e3499a1c11f751"
+                    },
+                    "properties": {
+                        "metisFindingId": "868867b69c9441178cd7733f66b65587",
+                        "cwe": "CWE-672",
+                        "severity": "Low",
+                        "reasoning": "In the hash setup path, the response handle is initialized from the caller-supplied iov->op_handle before tfm_crypto_operation_alloc succeeds. If allocation later fails, this function returns the error without clearing out_vec[0]. The comments later in the file show that out_vec[0] is reflected back to the client for some operations, so a failure path may return a handle value that was not successfully allocated by this call. Depending on how clients or handle management treat this value, this could create stale-handle confusion across the secure/non-secure boundary. The exact impact depends on tfm_crypto_operation_alloc and the caller contract, which are not present in this file.",
+                        "mitigation": "Only write the newly allocated handle to out_vec[0] after tfm_crypto_operation_alloc returns success, or clear out_vec[0] / set out_vec[0].len to 0 on allocation failure. Ensure allocation APIs do not rely on pre-populated untrusted handle values unless explicitly intended and validated.",
+                        "confidence": 0.56,
+                        "anchor": {
+                            "file_path": "secure_fw/partitions/crypto/crypto_hash.c",
+                            "start_line": 141,
+                            "end_line": 148,
+                            "start_col": 0,
+                            "end_col": 65,
+                            "start_byte": 3654,
+                            "end_byte": 4060,
+                            "symbol": "secure_fw/partitions/crypto/crypto_hash.c::tfm_crypto_hash_interface",
+                            "kind": "range",
+                            "content_hash": "094c47f9bf72fe36",
+                            "confidence": "exact"
+                        },
+                        "metisTriaged": true,
+                        "metisTriageStatus": "valid",
+                        "metisTriageReason": "Verdict: The finding is valid because the hash setup path writes iov->op_handle into out_vec[0] before allocation succeeds and returns allocation errors without clearing that output. Evidence: secure_fw/partitions/crypto/crypto_hash.c:140-148 performs the pre-allocation write and allocation call, secure_fw/partitions/crypto/crypto_hash.c:169-182 returns non-success status without clearing out_vec[0], and secure_fw/partitions/crypto/crypto_alloc.c:89-92 shows allocation can fail immediately when the prewritten handle is nonzero. Gap: none.",
+                        "metisTriageTimestamp": "2026-09-22T15:28:40.068428+00:00",
+                        "metisEvidenceRequirements": [
+                            "local_context",
+                            "symbol_definition",
+                            "use_site",
+                            "indirection_resolution"
+                        ],
+                        "metisEvidenceCoverage": {
+                            "local_context": 2,
+                            "symbol_definition": 3,
+                            "use_site": 12,
+                            "indirection_resolution": 1
+                        },
+                        "metisMissingEvidence": []
+                    }
+                },
+                {
+                    "ruleId": "AI001",
+                    "level": "note",
+                    "message": {
+                        "id": "AI001",
+                        "arguments": [
+                            "Hash update forwards unvalidated caller buffer to an existing secure operation"
+                        ],
+                        "text": "Hash update forwards unvalidated caller buffer to an existing secure operation"
+                    },
+                    "locations": [
+                        {
+                            "physicalLocation": {
+                                "artifactLocation": {
+                                    "uri": "secure_fw/partitions/crypto/crypto_hash.c"
+                                },
+                                "region": {
+                                    "startLine": 196,
+                                    "endLine": 199,
+                                    "snippet": {
+                                        "text": "const uint8_t *input = in_vec[1].base;\nsize_t input_length = in_vec[1].len;\n\nreturn psa_hash_update(operation, input, input_length);"
+                                    }
+                                },
+                                "contextRegion": {
+                                    "startLine": 193,
+                                    "endLine": 199,
+                                    "snippet": {
+                                        "text": "    break;\n    case TFM_CRYPTO_HASH_UPDATE_SID:\n    {\n        const uint8_t *input = in_vec[1].base;\n        size_t input_length = in_vec[1].len;\n\n        return psa_hash_update(operation, input, input_length);"
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    "partialFingerprints": {
+                        "primaryLocationLineHash": "4acc57a797d608272348cfcdadd47147e403d72598e0c874ad9f939b5fba1938",
+                        "metisAnchor/v1": "2e6daec7a95faef2a0b4ffd9777b18a962a020cf2df62779360d8e97a4354b0e"
+                    },
+                    "properties": {
+                        "metisFindingId": "86dbf850c0af4a989651e92ef9d0a1a5",
+                        "cwe": "CWE-20",
+                        "severity": "Low",
+                        "reasoning": "For multipart hash update, the secure operation state is looked up before the input buffer is validated, and then the caller-controlled base and length are passed directly to psa_hash_update. If input_length is nonzero and in_vec[1].base is NULL or not a valid mapped client buffer, the secure service may fault or the lower layer may read unintended memory. This is particularly relevant because a malformed update can target an already allocated operation and may leave state lifetime/cleanup to the caller after an error.",
+                        "mitigation": "Validate in_vec[1].base before using it: allow NULL only when input_length is zero, otherwise return PSA_ERROR_PROGRAMMER_ERROR. If an invalid update should terminate the operation under the service contract, explicitly abort/release the operation; otherwise document that the handle remains valid after parameter errors.",
+                        "confidence": 0.66,
+                        "anchor": {
+                            "file_path": "secure_fw/partitions/crypto/crypto_hash.c",
+                            "start_line": 196,
+                            "end_line": 199,
+                            "start_col": 0,
+                            "end_col": 63,
+                            "start_byte": 5897,
+                            "end_byte": 6053,
+                            "symbol": "secure_fw/partitions/crypto/crypto_hash.c::tfm_crypto_hash_interface",
+                            "kind": "range",
+                            "content_hash": "e592c7cb2776e54a",
+                            "confidence": "exact"
+                        },
+                        "metisTriaged": true,
+                        "metisTriageStatus": "invalid",
+                        "metisTriageReason": "Verdict: the reported unvalidated caller buffer path is contradicted by dispatcher initialization that maps or copies nonzero client input before the hash interface receives it. Evidence: in MM-IOVEC builds nonzero in_vec entries are set from psa_map_invec and zero-length entries get NULL at secure_fw/partitions/crypto/crypto_init.c:70-76, while non-MM builds allocate scratch and read input into it before assigning in_vec[i].base at secure_fw/partitions/crypto/crypto_init.c:166-178; tfm_crypto_call_srv performs this initialization before dispatch at secure_fw/partitions/crypto/crypto_init.c:291-299, and the hash update then forwards that prepared in_vec[1] at secure_fw/partitions/crypto/crypto_hash.c:196-199. Gap: none.",
+                        "metisTriageTimestamp": "2026-09-22T15:28:20.289461+00:00",
+                        "metisEvidenceRequirements": [
+                            "local_context",
+                            "symbol_definition",
+                            "use_site"
+                        ],
+                        "metisEvidenceCoverage": {
+                            "local_context": 2,
+                            "symbol_definition": 8,
+                            "use_site": 11
+                        },
+                        "metisMissingEvidence": []
+                    }
+                },
+                {
+                    "ruleId": "AI001",
+                    "level": "warning",
+                    "message": {
+                        "id": "AI001",
+                        "arguments": [
+                            "Hash finish writes to unvalidated output vector buffer"
+                        ],
+                        "text": "Hash finish writes to unvalidated output vector buffer"
+                    },
+                    "locations": [
+                        {
+                            "physicalLocation": {
+                                "artifactLocation": {
+                                    "uri": "secure_fw/partitions/crypto/crypto_hash.c"
+                                },
+                                "region": {
+                                    "startLine": 203,
+                                    "endLine": 206,
+                                    "snippet": {
+                                        "text": "uint8_t *hash = out_vec[1].base;\nsize_t hash_size = out_vec[1].len;\n\nstatus = psa_hash_finish(operation, hash, hash_size, &out_vec[1].len);"
+                                    }
+                                },
+                                "contextRegion": {
+                                    "startLine": 200,
+                                    "endLine": 206,
+                                    "snippet": {
+                                        "text": "    }\n    case TFM_CRYPTO_HASH_FINISH_SID:\n    {\n        uint8_t *hash = out_vec[1].base;\n        size_t hash_size = out_vec[1].len;\n\n        status = psa_hash_finish(operation, hash, hash_size, &out_vec[1].len);"
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    "partialFingerprints": {
+                        "primaryLocationLineHash": "6272be8349ecda0573f430f00b34fa33727e9f11169704ef9e1d7e66f4e315d7",
+                        "metisAnchor/v1": "5011072543ee37b6859c8d787ba449f3a50ca95ed4bfe3cea1fe625c5ca59941"
+                    },
+                    "properties": {
+                        "metisFindingId": "74257c7a115e4f3da5eb38615852c706",
+                        "cwe": "CWE-20",
+                        "severity": "Medium",
+                        "reasoning": "The finish path passes out_vec[1].base and &out_vec[1].len to psa_hash_finish without checking that out_vec[1].base is non-NULL and that the vector has sufficient space for the selected algorithm's digest. Although the PSA implementation may return an error for too-small buffers, a NULL base with a nonzero length or an invalid output vector at the service boundary can cause a secure-side write fault if lower layers rely on the shim for pointer validation. This is supported by the explicit pointer validation present for handle out_vec[0] but absent for the digest output vector.",
+                        "mitigation": "Before calling psa_hash_finish, validate that out_vec[1].base is non-NULL when an output digest is expected, and that out_vec[1].len is at least PSA_HASH_LENGTH for the operation's algorithm if that metadata is available. On validation failure, preserve or explicitly release the operation according to the PSA contract and return PSA_ERROR_PROGRAMMER_ERROR or PSA_ERROR_BUFFER_TOO_SMALL as appropriate.",
+                        "confidence": 0.67,
+                        "anchor": {
+                            "file_path": "secure_fw/partitions/crypto/crypto_hash.c",
+                            "start_line": 203,
+                            "end_line": 206,
+                            "start_col": 0,
+                            "end_col": 78,
+                            "start_byte": 6103,
+                            "end_byte": 6266,
+                            "symbol": "secure_fw/partitions/crypto/crypto_hash.c::tfm_crypto_hash_interface",
+                            "kind": "range",
+                            "content_hash": "326bdf6e2c2e1589",
+                            "confidence": "exact"
+                        },
+                        "metisTriaged": true,
+                        "metisTriageStatus": "inconclusive",
+                        "metisTriageReason": "Verdict: inconclusive because the local finish path passes out_vec[1] directly to psa_hash_finish without a local digest-buffer check, but the decisive lower-layer write behavior and framework vector-mapping guarantees are unresolved. Evidence: tfm_crypto_hash_interface reads out_vec[1].base/len and passes them to psa_hash_finish at secure_fw/partitions/crypto/crypto_hash.c:203, secure_fw/partitions/crypto/crypto_hash.c:204, and secure_fw/partitions/crypto/crypto_hash.c:206; the caller constructs or maps output vectors before dispatch at secure_fw/partitions/crypto/crypto_init.c:79, secure_fw/partitions/crypto/crypto_init.c:82, secure_fw/partitions/crypto/crypto_init.c:180, secure_fw/partitions/crypto/crypto_init.c:188, and dispatches to the hash interface at secure_fw/partitions/crypto/crypto_init.c:235. Gap: psa_hash_finish implementation/contract, psa_map_outvec invalid-vector behavior, and the active PSA_FRAMEWORK_HAS_MM_IOVEC build branch are unresolved.",
+                        "metisTriageTimestamp": "2026-09-22T15:28:34.342352+00:00",
+                        "metisEvidenceRequirements": [
+                            "local_context",
+                            "symbol_definition",
+                            "use_site",
+                            "indirection_resolution"
+                        ],
+                        "metisEvidenceCoverage": {
+                            "local_context": 2,
+                            "symbol_definition": 6,
+                            "use_site": 12,
+                            "indirection_resolution": 1
+                        },
+                        "metisMissingEvidence": []
+                    }
+                },
+                {
+                    "ruleId": "AI001",
+                    "level": "note",
+                    "message": {
+                        "id": "AI001",
+                        "arguments": [
+                            "Clone failure path may release using a caller-controlled handle pointer after allocator-mutated output state"
+                        ],
+                        "text": "Clone failure path may release using a caller-controlled handle pointer after allocator-mutated output state"
+                    },
+                    "locations": [
+                        {
+                            "physicalLocation": {
+                                "artifactLocation": {
+                                    "uri": "secure_fw/partitions/crypto/crypto_hash.c"
+                                },
+                                "region": {
+                                    "startLine": 238,
+                                    "endLine": 250,
+                                    "snippet": {
+                                        "text": "*p_handle = *((uint32_t *)in_vec[1].base);\n\n/* Allocate the target operation context in the secure world */\nstatus = tfm_crypto_operation_alloc(TFM_CRYPTO_HASH_OPERATION,\n                                    p_handle,\n                                    (void **)&target_operation);\nif (status != PSA_SUCCESS) {\n    return status;\n}\nstatus = psa_hash_clone(operation, target_operation);\nif (status != PSA_SUCCESS) {\n    (void)tfm_crypto_operation_release(p_handle);\n}"
+                                    }
+                                },
+                                "contextRegion": {
+                                    "startLine": 235,
+                                    "endLine": 241,
+                                    "snippet": {
+                                        "text": "            (in_vec[1].base == NULL) || (in_vec[1].len < sizeof(uint32_t))) {\n            return PSA_ERROR_PROGRAMMER_ERROR;\n        }\n        *p_handle = *((uint32_t *)in_vec[1].base);\n\n        /* Allocate the target operation context in the secure world */\n        status = tfm_crypto_operation_alloc(TFM_CRYPTO_HASH_OPERATION,"
+                                    }
+                                }
+                            }
+                        }
+                    ],
+                    "partialFingerprints": {
+                        "primaryLocationLineHash": "28adbacc7ab44edcbb86e82da90e2c475acd4ef4c079920bd0b44c17d1cf9d04",
+                        "metisAnchor/v1": "e6f3a2e68c763c8b12ef73ce67034bcde09c7c3612e16ba6a107e627365f02dc"
+                    },
+                    "properties": {
+                        "metisFindingId": "d7c837166a204ba4b8ac34713dfd1b92",
+                        "cwe": "CWE-672",
+                        "severity": "Low",
+                        "reasoning": "The clone path seeds the output handle from a value read out of in_vec[1].base, passes the same pointer to the allocator, and on clone failure releases whatever handle value is then stored at p_handle. If tfm_crypto_operation_alloc does not always overwrite p_handle before returning success, or if the client-controlled seed is interpreted as meaningful by the allocator/release APIs, a clone failure could release an unintended existing operation handle. This file does not show allocator semantics, so the issue is a cross-component lifetime candidate rather than a confirmed bug, but the local pattern couples untrusted handle input, allocation, and release-by-pointer in a way that can produce state confusion.",
+                        "mitigation": "Do not initialize p_handle from untrusted input unless the allocator contract requires a validated client-provided placeholder. Prefer allocating a fresh target handle into a local temporary initialized to an invalid value, copy it to out_vec[0] only after successful allocation/clone, and release only the fresh handle known to have been allocated in this call.",
+                        "confidence": 0.55,
+                        "anchor": {
+                            "file_path": "secure_fw/partitions/crypto/crypto_hash.c",
+                            "start_line": 238,
+                            "end_line": 250,
+                            "start_col": 0,
+                            "end_col": 9,
+                            "start_byte": 7219,
+                            "end_byte": 7781,
+                            "symbol": "secure_fw/partitions/crypto/crypto_hash.c::tfm_crypto_hash_interface",
+                            "kind": "range",
+                            "content_hash": "fdedeb0d16f457e9",
+                            "confidence": "exact"
+                        },
+                        "metisTriaged": true,
+                        "metisTriageStatus": "invalid",
+                        "metisTriageReason": "Verdict: invalid because the allocator rejects any non-invalid seeded handle and, on success, always writes a fresh handle before the clone-failure release path can run. Evidence: clone copies in_vec[1] into p_handle then calls allocation and only releases after allocation success and clone failure at secure_fw/partitions/crypto/crypto_hash.c:238, secure_fw/partitions/crypto/crypto_hash.c:241, secure_fw/partitions/crypto/crypto_hash.c:247, secure_fw/partitions/crypto/crypto_hash.c:249; the allocator rejects nonzero handles at secure_fw/partitions/crypto/crypto_alloc.c:89 and secure_fw/partitions/crypto/crypto_alloc.c:90, and writes *handle = i + 1 before returning success at secure_fw/partitions/crypto/crypto_alloc.c:110 and secure_fw/partitions/crypto/crypto_alloc.c:112. Gap: none.",
+                        "metisTriageTimestamp": "2026-09-22T15:28:03.347377+00:00",
+                        "metisEvidenceRequirements": [
+                            "local_context",
+                            "symbol_definition",
+                            "use_site",
+                            "indirection_resolution"
+                        ],
+                        "metisEvidenceCoverage": {
+                            "local_context": 2,
+                            "symbol_definition": 5,
+                            "use_site": 12,
+                            "indirection_resolution": 1
+                        },
+                        "metisMissingEvidence": []
+                    }
+                }
+            ]
+        }
+    ],
+    "$schema": "https://json.schemastore.org/sarif-2.1.0.json"
+}
