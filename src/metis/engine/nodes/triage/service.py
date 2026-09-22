@@ -6,13 +6,14 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable
-from typing import Any
 from typing import TYPE_CHECKING
+from typing import Any
 
 from metis.chat_model_options import merge_chat_model_kwargs
 from metis.engine.codegraph import CodeGraph
 from metis.engine.nodes.reachability.graph_utils import function_for_location
 from metis.engine.stages.triage.models import TriageRequest
+from metis.engine.tools.campaign_evidence import campaign_evidence_model_tools
 from metis.engine.tools.navigation import navigation_model_tools
 from metis.usage import UsageHooks
 
@@ -21,6 +22,7 @@ from .workflow import TriageWorkflow
 logger = logging.getLogger("metis")
 
 if TYPE_CHECKING:
+    from metis.campaign_evidence import CampaignEvidenceCapability
     from metis.engine.capabilities.manifest import CapabilityManifest
     from metis.engine.capabilities.navigation import NavigationCapability
 
@@ -39,6 +41,7 @@ class TriageClassifierService:
         usage_hooks: UsageHooks | None,
         model_tool_max_contract_chars: int,
         navigation_manifest: CapabilityManifest,
+        campaign_evidence_manifest: CapabilityManifest,
     ) -> None:
         self._llm_provider = llm_provider
         self._model = model
@@ -50,6 +53,7 @@ class TriageClassifierService:
         self._usage_hooks = usage_hooks
         self._model_tool_max_contract_chars = model_tool_max_contract_chars
         self._navigation_manifest = navigation_manifest
+        self._campaign_evidence_manifest = campaign_evidence_manifest
         self._local = threading.local()
 
     def classify(
@@ -59,6 +63,7 @@ class TriageClassifierService:
         debug_callback: object,
         *,
         navigation: NavigationCapability,
+        campaign_evidence: CampaignEvidenceCapability | None = None,
         codegraph: CodeGraph | None = None,
         unavailable_files: tuple[str, ...] = (),
         model: str | None = None,
@@ -85,7 +90,17 @@ class TriageClassifierService:
             context = _codegraph_context(codegraph, normalized_path, finding.line)
             if context:
                 request["codegraph_context"] = context
-        return self._workflow(navigation, model_tool_max_rounds, model).triage(request)
+        workflow = (
+            self._workflow(navigation, model_tool_max_rounds, model)
+            if campaign_evidence is None
+            else self._workflow(
+                navigation,
+                model_tool_max_rounds,
+                model,
+                campaign_evidence=campaign_evidence,
+            )
+        )
+        return workflow.triage(request)
 
     def close(self) -> None:
         self._local = threading.local()
@@ -95,10 +110,17 @@ class TriageClassifierService:
         navigation: NavigationCapability,
         model_tool_max_rounds: int | None,
         model: str | None = None,
+        *,
+        campaign_evidence: CampaignEvidenceCapability | None = None,
     ) -> TriageWorkflow:
         model = model or self._model
         workflow = getattr(self._local, "workflow", None)
-        workflow_key = (id(navigation), model_tool_max_rounds, model)
+        workflow_key = (
+            id(navigation),
+            id(campaign_evidence),
+            model_tool_max_rounds,
+            model,
+        )
         if (
             workflow is None
             or getattr(self._local, "workflow_key", None) != workflow_key
@@ -111,6 +133,12 @@ class TriageClassifierService:
                 self._navigation_manifest,
                 max_contract_chars=self._model_tool_max_contract_chars,
             )
+            if campaign_evidence is not None:
+                model_tools += campaign_evidence_model_tools(
+                    campaign_evidence,
+                    self._campaign_evidence_manifest,
+                    max_contract_chars=self._model_tool_max_contract_chars,
+                )
             workflow = TriageWorkflow(
                 llm_provider=self._llm_provider,
                 llama_query_model=model,

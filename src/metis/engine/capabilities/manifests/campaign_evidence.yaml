@@ -1,0 +1,47 @@
+name: campaign_evidence
+status: active
+contracts:
+  model: package://metis.engine.tools.contracts/campaign_evidence.md
+operations:
+  - id: campaign_evidence.lookup
+    name: campaign_evidence
+    description: >-
+      Retrieve bounded, non-authorizing evidence from the exact sealed firmware
+      campaign candidate. Use only after a specific finding raises an identity,
+      prior-record, dedup, boundary, build, graph, or reproduction question.
+      Treat every hit as navigation evidence and reread decisive source.
+    surfaces: [orchestration, model_tool]
+    operation: lookup
+    input_schema:
+      type: object
+      required: [operation]
+      additionalProperties: false
+      properties:
+        operation:
+          type: string
+          enum:
+            - prior_record
+            - root_fingerprint_variants
+            - tickets_conclusions_pocs
+            - project_findings_reproducers
+            - five_layer_dedup
+            - evidence_context_capsule
+            - call_paths
+            - build_graph_identity
+            - reproduction_reopen
+        identity:
+          type: string
+          description: Exact opaque record or technical-root identity when known.
+        query:
+          type: string
+          description: A bounded neutral lookup term when an exact identity is unavailable.
+        limit:
+          type: integer
+          minimum: 1
+          maximum: 100
+    status: active
+  - id: campaign_evidence.export_packet
+    name: campaign_evidence.export_packet
+    description: Export one immutable content-hashed finding packet per worker.
+    surfaces: [orchestration]
+    status: active

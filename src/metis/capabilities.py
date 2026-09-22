@@ -3,6 +3,9 @@
 
 """Stable contracts for separately distributed engine capabilities."""
 
+from metis.campaign_evidence import CampaignEvidenceBackend
+from metis.campaign_evidence import CampaignEvidenceConfiguration
+from metis.campaign_evidence import CampaignEvidenceProfile
 from metis.engine.capabilities.contracts import CapabilityContext
 from metis.engine.capabilities.contracts import CapabilityRegistration
 from metis.engine.capabilities.contracts import CapabilityRepository
@@ -10,6 +13,9 @@ from metis.engine.capabilities.manifest import CapabilityManifest
 from metis.engine.capabilities.manifest import CapabilityOperationManifest
 
 __all__ = [
+    "CampaignEvidenceBackend",
+    "CampaignEvidenceConfiguration",
+    "CampaignEvidenceProfile",
     "CapabilityContext",
     "CapabilityManifest",
     "CapabilityOperationManifest",

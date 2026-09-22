@@ -138,6 +138,7 @@ def build_builtin_execution(
                     engine_config.capability_settings.model_tools.max_contract_chars
                 ),
                 navigation_manifest=capabilities.manifest("navigation"),
+                campaign_evidence_manifest=capabilities.manifest("campaign_evidence"),
             )
             registrations.append(triage_node.create_node(triage_classifier))
 

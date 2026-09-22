@@ -3,13 +3,13 @@
 
 from __future__ import annotations
 
+import json
+import logging
+import sqlite3
 from collections.abc import Mapping
 from contextlib import closing
-import json
 from hashlib import sha256
-import logging
 from pathlib import Path
-import sqlite3
 
 from metis.engine.stages.review.models import ReviewCheckpointRecord
 from metis.version import __version__ as METIS_VERSION
@@ -51,6 +51,27 @@ def _connect_checkpoint(path: Path) -> sqlite3.Connection:
     return sqlite3.connect(path)
 
 
+def _json_nesting_exceeds_limit(payload: str, limit: int = 512) -> bool:
+    depth = 0
+    quoted = False
+    escaped = False
+    for character in payload:
+        if escaped:
+            escaped = False
+            continue
+        if character == "\\" and quoted:
+            escaped = True
+        elif character == '"':
+            quoted = not quoted
+        elif not quoted and character in "[{":
+            depth += 1
+            if depth > limit:
+                return True
+        elif not quoted and character in "]}":
+            depth -= 1
+    return False
+
+
 def _sqlite_records(
     path: Path, *, producer: str | None = None
 ) -> dict[str, dict[str, object]] | None:
@@ -71,6 +92,8 @@ def _sqlite_records(
                 parameters += (producer,)
             rows = connection.execute(query, parameters)
             for key, payload in rows:
+                if isinstance(payload, str) and _json_nesting_exceeds_limit(payload):
+                    continue
                 try:
                     record = json.loads(payload)
                 except (TypeError, ValueError, RecursionError):

@@ -7,6 +7,8 @@ from typing import cast
 
 from pydantic import BaseModel
 
+from metis.campaign_evidence import CampaignEvidenceCapability
+from metis.campaign_evidence import CampaignEvidenceConfiguration
 from metis.engine.memory_runtime import create_memory_service
 from metis.engine.repository import EngineRepository
 from metis.engine.runtime import EngineConfig
@@ -53,6 +55,18 @@ def builtin_capability_registrations(
             cast(MemoryCapabilityConfiguration, configuration),
         )
 
+    def build_campaign_evidence(
+        context: CapabilityContext, configuration: BaseModel
+    ) -> CampaignEvidenceCapability:
+        parsed = cast(CampaignEvidenceConfiguration, configuration)
+        profile = context.codebase_path / parsed.profile
+        packet_output = (
+            context.codebase_path / parsed.packet_output
+            if parsed.packet_output is not None
+            else None
+        )
+        return CampaignEvidenceCapability(profile, packet_output)
+
     return (
         CapabilityRegistration(
             _required_manifest("index"),
@@ -70,6 +84,14 @@ def builtin_capability_registrations(
             MemoryCapabilityConfiguration,
             build_memory,
             close=lambda capability: cast(MemoryService, capability).close(),
+        ),
+        CapabilityRegistration(
+            _required_manifest("campaign_evidence"),
+            CampaignEvidenceConfiguration,
+            build_campaign_evidence,
+            close=lambda capability: cast(
+                CampaignEvidenceCapability, capability
+            ).close(),
         ),
     )
 

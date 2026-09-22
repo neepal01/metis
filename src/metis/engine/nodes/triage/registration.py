@@ -4,21 +4,23 @@
 from __future__ import annotations
 
 from functools import partial
-from typing import cast
 from typing import TYPE_CHECKING
+from typing import cast
 
 from metis.engine.codegraph import CodeGraphReference
-from metis.engine.execution.contracts import EmptyNodeConfiguration
 from metis.engine.execution.contracts import CapabilityRequirement
+from metis.engine.execution.contracts import EmptyNodeConfiguration
 from metis.engine.execution.contracts import NodeInvocation
 from metis.engine.execution.contracts import NodeRegistration
 from metis.engine.execution.contracts import NodeResult
 from metis.engine.stages.triage.models import TriageRun
 
 if TYPE_CHECKING:
-    from .service import TriageClassifierService
+    from metis.campaign_evidence import CampaignEvidenceCapability
     from metis.engine.capabilities.navigation import NavigationCapability
     from metis.memory import MemoryService
+
+    from .service import TriageClassifierService
 
 
 def create_node(
@@ -35,6 +37,10 @@ def create_node(
             "NavigationCapability",
             invocation.context.capabilities["navigation"],
         )
+        campaign_evidence = cast(
+            "CampaignEvidenceCapability | None",
+            invocation.context.capabilities.get("campaign_evidence"),
+        )
         reference = cast(CodeGraphReference | None, invocation.inputs["codegraph"])
         codegraph = (
             invocation.context.codegraphs.load(reference)
@@ -47,6 +53,7 @@ def create_node(
             classifier=partial(
                 classifier_service.classify,
                 navigation=navigation,
+                campaign_evidence=campaign_evidence,
                 codegraph=codegraph,
                 unavailable_files=(
                     reference.failed_files if reference is not None else ()
@@ -76,5 +83,6 @@ def create_node(
         capabilities={
             "memory": CapabilityRequirement.OPTIONAL,
             "navigation": CapabilityRequirement.REQUIRED,
+            "campaign_evidence": CapabilityRequirement.OPTIONAL,
         },
     )
