@@ -18,6 +18,7 @@ class ReviewCheckpointSession:
     def __init__(self, producer: str, callbacks: NodeCallbacks) -> None:
         self._producer = producer
         self._callback = callbacks.checkpoint
+        self._required = callbacks.checkpoint_required
         self._lock = Lock()
         self._write_lock = RLock()
         self._pending: deque[tuple[dict[str, Any], int]] = deque()
@@ -71,7 +72,10 @@ class ReviewCheckpointSession:
                     except CancelledError:
                         raise
                     except Exception:
-                        pass
+                        if self._required:
+                            # Firmware-campaign provider results are not
+                            # complete until their durable commit succeeds.
+                            raise
                     self._pending.popleft()
             finally:
                 self._pending.clear()

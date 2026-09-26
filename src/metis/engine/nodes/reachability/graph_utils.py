@@ -1,14 +1,15 @@
 # SPDX-FileCopyrightText: Copyright 2026 Arm Limited and/or its affiliates <open-source-office@arm.com>
 # SPDX-License-Identifier: Apache-2.0
 
+import hashlib
 from collections import defaultdict
 from collections.abc import Sequence
 from dataclasses import replace
-import hashlib
 from typing import Literal
 
 from metis.engine.codegraph import CodeGraph
 from metis.engine.codegraph import FunctionNode
+
 from .domain import ReachabilityPath
 
 
@@ -81,6 +82,7 @@ def graph_fingerprint(graph) -> str:
                 repr(call.conditions),
                 repr(call.must_conditions),
                 repr(call.result),
+                repr(call.external_target_evidence),
             )
         for assignment in node.assignments:
             update("assignment", node.unique_name, repr(assignment))
@@ -196,6 +198,11 @@ def _copy_graph_nodes(graph, node_names):
                 call,
                 target_ids=tuple(
                     target for target in call.target_ids if target in selected
+                ),
+                external_target_evidence=tuple(
+                    evidence
+                    for evidence in call.external_target_evidence
+                    if evidence.target_id in selected
                 ),
                 targets_complete=(
                     call.targets_complete

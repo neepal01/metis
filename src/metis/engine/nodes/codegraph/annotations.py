@@ -46,6 +46,7 @@ class CodeGraphSecurityFunction(BaseModel):
 class CodeGraphConfiguration(BaseModel):
     source_functions: tuple[CodeGraphSourceFunction, ...] = ()
     security_functions: tuple[CodeGraphSecurityFunction, ...] = ()
+    external_indirect_call_evidence: NonEmptyString | None = None
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 

@@ -7,6 +7,7 @@ from .models import CallSite
 from .models import CodeExpression
 from .models import CodeGraph
 from .models import ControlCondition
+from .models import ExternalCallTargetEvidence
 from .models import FunctionNode
 from .models import FunctionParameter
 from .models import GlobalConstruct
@@ -44,6 +45,7 @@ __all__ = [
     "CodeGraphResult",
     "CodeGraphSemantics",
     "ControlCondition",
+    "ExternalCallTargetEvidence",
     "FunctionNode",
     "FunctionParameter",
     "GlobalConstruct",

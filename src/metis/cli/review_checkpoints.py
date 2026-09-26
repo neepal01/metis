@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import sqlite3
 from collections.abc import Mapping
 from contextlib import closing
@@ -106,7 +107,9 @@ def _sqlite_records(
     return records or None
 
 
-def _write_sqlite_record(path: Path, record: ReviewCheckpointRecord) -> None:
+def _write_sqlite_record(
+    path: Path, record: ReviewCheckpointRecord, *, fail_closed: bool = False
+) -> None:
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = json.dumps(
@@ -142,6 +145,8 @@ def _write_sqlite_record(path: Path, record: ReviewCheckpointRecord) -> None:
                 )
             connection.commit()
     except (OSError, sqlite3.Error) as exc:
+        if fail_closed:
+            raise
         logging.getLogger("metis").error(
             "Unable to save review checkpoint %s: %s", path, exc
         )
@@ -154,8 +159,14 @@ def review_checkpoint_callbacks(
 ) -> dict[str, object]:
     if not enabled:
         return {}
+    campaign_root = os.environ.get("METIS_FIRMWARE_PROVIDER_CHECKPOINT_ROOT")
     checkpoint_base = (
-        Path(codebase_path).expanduser().resolve() / ".metis" / "checkpoints" / "review"
+        Path(campaign_root).resolve() / "review"
+        if campaign_root
+        else Path(codebase_path).expanduser().resolve()
+        / ".metis"
+        / "checkpoints"
+        / "review"
     )
 
     def resume(producer: str) -> Mapping[str, Mapping[str, object]] | None:
@@ -172,9 +183,11 @@ def review_checkpoint_callbacks(
         _write_sqlite_record(
             _checkpoint_path(checkpoint_base, record.producer),
             record,
+            fail_closed=bool(campaign_root),
         )
 
     return {
         "review_checkpoint_callback": checkpoint,
         "review_resume_callback": resume,
+        "review_checkpoint_required": bool(campaign_root),
     }

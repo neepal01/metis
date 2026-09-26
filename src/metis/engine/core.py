@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import os
 from pathlib import Path
 from threading import RLock
 from typing import Any
@@ -272,6 +273,27 @@ class MetisEngine:
         target: str | None = None,
         callbacks: dict[str, object] | None = None,
     ) -> dict[str, object]:
+        # Firmware adapters often invoke the engine as a library. Bind the
+        # existing review checkpoint implementation automatically when the
+        # campaign coordinator supplies its content-addressed durable root.
+        if os.environ.get("METIS_FIRMWARE_PROVIDER_CHECKPOINT_ROOT"):
+            from metis.cli.review_checkpoints import review_checkpoint_callbacks
+
+            durable = review_checkpoint_callbacks(
+                codebase_path=self._config.codebase_path,
+                enabled=True,
+            )
+            supplied = callbacks or {}
+            later_checkpoint = supplied.get("review_checkpoint_callback")
+            if later_checkpoint:
+                durable_checkpoint = durable["review_checkpoint_callback"]
+
+                def checkpoint_before_later_callback(payload, processed, total):
+                    durable_checkpoint(payload, processed, total)
+                    later_checkpoint(payload, processed, total)
+
+                durable["review_checkpoint_callback"] = checkpoint_before_later_callback
+            callbacks = {**supplied, **durable}
         with self._execution_span("review", {"mode": mode, "target": target}) as span:
             result = self.execution.execute_review(
                 ReviewCommand(mode=mode, target=target),
@@ -420,6 +442,8 @@ class MetisEngine:
         checkpoint_path: str | None = None,
         options: TriageOptions | None = None,
     ) -> dict:
+        if isinstance(codegraph, dict):
+            codegraph = CodeGraphReference.model_validate(codegraph)
         with self._execution_span(
             "triage", {"include_triaged": bool(options and options.include_triaged)}
         ) as span:

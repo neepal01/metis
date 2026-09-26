@@ -551,6 +551,21 @@ def _boundary_call_data(
         "target_ids": [
             _function_ref(references, target_id) for target_id in call.target_ids
         ],
+        "external_targets": [
+            {
+                "target": _function_ref(references, evidence.target_id),
+                "authority": evidence.authority,
+                "site_id": evidence.site_id,
+                "artifact_sha256": evidence.artifact_sha256,
+                "evidence_sha256": evidence.evidence_sha256,
+                "build_id": evidence.build_id,
+                "confidence": evidence.confidence,
+                "resolvers": list(evidence.resolvers),
+                "runtime_reachability": evidence.runtime_reachability,
+                "target_preexisting": evidence.target_preexisting,
+            }
+            for evidence in call.external_target_evidence
+        ],
         "complete": True if call.targets_complete else None,
         **_call_expression_data(
             call,

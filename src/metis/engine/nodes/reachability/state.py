@@ -402,9 +402,10 @@ def _fatal_null_branch_proves_nonnull(
     if len(intervening_calls) != 1:
         return False
     callsite = intervening_calls[0]
-    if len(callsite.conditions) != 1 or len(callsite.target_ids) != 1:
+    targets = callsite.authoritative_target_ids
+    if len(callsite.conditions) != 1 or len(targets) != 1:
         return False
-    target_contract = contracts.get(callsite.target_ids[0])
+    target_contract = contracts.get(targets[0])
     if target_contract is None or target_contract.normal_exit.status != "impossible":
         return False
     condition = callsite.conditions[0]
@@ -432,9 +433,10 @@ def _callee_nonnull_requirements(
     callsite: CallSite,
     contracts: Mapping[str, FunctionContract],
 ) -> tuple[FactLiteral, ...] | None:
-    if len(callsite.target_ids) != 1:
+    targets = callsite.authoritative_target_ids
+    if len(targets) != 1:
         return None
-    target_id = callsite.target_ids[0]
+    target_id = targets[0]
     owner_parameters = {
         parameter.name: index
         for index, parameter in enumerate(owner.parameters)
@@ -482,9 +484,10 @@ def callsite_has_deterministic_nonnull_return(
 ) -> bool:
     """Return whether source-derived callsite facts prove a non-null result."""
 
-    if len(callsite.target_ids) != 1:
+    targets = callsite.authoritative_target_ids
+    if len(targets) != 1:
         return False
-    target_id = callsite.target_ids[0]
+    target_id = targets[0]
     proven = {
         (requirement.atom, requirement.truth)
         for requirement in _callsite_must_null_literals(owner, callsite, target_id)
@@ -502,9 +505,10 @@ def _callee_nonnull_transfers(
     callsite: CallSite,
     contracts: Mapping[str, FunctionContract],
 ) -> tuple[GuardedTransfer, ...]:
-    if len(callsite.target_ids) != 1:
+    targets = callsite.authoritative_target_ids
+    if len(targets) != 1:
         return ()
-    target_id = callsite.target_ids[0]
+    target_id = targets[0]
     contract = contracts.get(target_id)
     if contract is None:
         return ()

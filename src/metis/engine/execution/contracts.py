@@ -428,6 +428,7 @@ class NodeCallbacks:
     checkpoint: CheckpointCallback | None = None
     resume: ResumeCallback | None = None
     diagnostic: DiagnosticCallback | None = None
+    checkpoint_required: bool = False
 
 
 def _not_cancelled() -> bool:

@@ -519,6 +519,7 @@ def _node_callbacks(
             else None
         ),
         diagnostic=_diagnostic_callback(cast(Any, values.get("diagnostic_callback"))),
+        checkpoint_required=bool(values.get("review_checkpoint_required")),
     )
 
 

@@ -492,6 +492,26 @@ def main():
         help="Include findings already triaged by Metis when running triage.",
     )
     parser.add_argument(
+        "--firmware-campaign",
+        metavar="PROFILE",
+        help=(
+            "Run the restart-safe autonomous firmware campaign described by a "
+            "schema-v5 project profile."
+        ),
+    )
+    parser.add_argument(
+        "--firmware-source-path",
+        action="append",
+        default=[],
+        metavar="COMPONENT=PATH",
+        help="Additional exact component checkout for --firmware-campaign.",
+    )
+    parser.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume an existing --firmware-campaign by its content receipts.",
+    )
+    parser.add_argument(
         "--tools",
         help=argparse.SUPPRESS,
     )
@@ -506,6 +526,29 @@ def main():
         else:
             args.output_file = list(args.output_files)
         args.output_files = None
+
+    if args.resume and not args.firmware_campaign:
+        parser.error("--resume requires --firmware-campaign")
+    if args.firmware_source_path and not args.firmware_campaign:
+        parser.error("--firmware-source-path requires --firmware-campaign")
+    if args.firmware_campaign:
+        incompatible = [
+            name
+            for name, value in (
+                ("--interactive", args.interactive),
+                ("--triage", args.triage),
+                ("--include-triaged", args.include_triaged),
+                ("--config", args.config),
+                ("--custom-prompt", args.custom_prompt),
+                ("--output-file", args.output_file),
+            )
+            if value
+        ]
+        if incompatible:
+            parser.error(
+                "--firmware-campaign owns execution configuration and cannot be "
+                f"combined with: {', '.join(incompatible)}"
+            )
 
     if args.quiet and args.verbose:
         print_console(
@@ -523,6 +566,20 @@ def main():
                 command_args=[],
             ),
         )
+        return
+    if args.firmware_campaign:
+        if not check_dir_exists(args.codebase_path):
+            raise SystemExit(1)
+        from metis_firmware_campaign.launcher import launch
+
+        exit_code = launch(
+            profile_path=Path(args.firmware_campaign),
+            codebase_path=Path(args.codebase_path),
+            resume=args.resume,
+            additional_source_paths=args.firmware_source_path,
+        )
+        if exit_code:
+            raise SystemExit(exit_code)
         return
     try:
         if not check_dir_exists(args.codebase_path):

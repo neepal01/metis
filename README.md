@@ -154,6 +154,23 @@ Run the configured graph against a codebase:
 uv run metis --codebase-path "/path/to/src" --verbose
 ```
 
+Run an installed schema-v5 firmware campaign profile through the complete
+restart-safe review, validation, deduplication, reproduction, and sealing
+workflow:
+
+```bash
+uv run metis \
+  --firmware-campaign /path/to/project/profile.json \
+  --codebase-path /path/to/project/source \
+  --resume
+```
+
+See the [firmware campaign workflow](docs/firmware-campaign.md) for its profile,
+authority, and multi-repository contracts.
+
+Attach build-specific portable indirect-call evidence through the normal code
+graph using the [fail-closed JSON importer](docs/external-indirect-call-evidence.md).
+
 Literal tokenizer markers such as `<|endoftext|>` in reviewed source are counted
 as ordinary text.
 

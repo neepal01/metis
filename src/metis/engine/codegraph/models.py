@@ -10,6 +10,7 @@ from typing import get_args
 
 CallKind = Literal["direct", "member", "constructor", "indirect"]
 CallResolution = Literal["resolved", "ambiguous", "unresolved"]
+ExternalCallAuthority = Literal["CANDIDATE_STATIC"]
 _CALL_KINDS: frozenset[str] = frozenset(get_args(CallKind))
 
 
@@ -132,6 +133,41 @@ class LoopStructure:
 
 
 @dataclass(frozen=True, slots=True)
+class ExternalCallTargetEvidence:
+    target_id: str
+    site_id: str
+    artifact_sha256: str
+    evidence_sha256: str
+    build_id: str
+    authority: ExternalCallAuthority = "CANDIDATE_STATIC"
+    confidence: str = ""
+    resolvers: tuple[str, ...] = ()
+    runtime_reachability: Literal["unproven"] = "unproven"
+    target_preexisting: bool = False
+
+    def __post_init__(self) -> None:
+        for name, value in (
+            ("target_id", self.target_id),
+            ("site_id", self.site_id),
+            ("build_id", self.build_id),
+        ):
+            if not value:
+                raise ValueError(f"External call {name} must not be empty")
+        for name, value in (
+            ("artifact_sha256", self.artifact_sha256),
+            ("evidence_sha256", self.evidence_sha256),
+        ):
+            if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+                raise ValueError(f"External call {name} must be lowercase SHA-256")
+        if self.authority != "CANDIDATE_STATIC":
+            raise ValueError("External indirect targets must remain CANDIDATE_STATIC")
+        if self.runtime_reachability != "unproven":
+            raise ValueError("External static targets must have unproven runtime reachability")
+        if len(set(self.resolvers)) != len(self.resolvers) or any(not value for value in self.resolvers):
+            raise ValueError("External call resolvers must be unique and non-empty")
+
+
+@dataclass(frozen=True, slots=True)
 class CallSite:
     symbol: str
     line: int
@@ -148,6 +184,7 @@ class CallSite:
     conditions: tuple[ControlCondition, ...] = ()
     must_conditions: tuple[ControlCondition, ...] = ()
     result: CodeExpression | None = None
+    external_target_evidence: tuple[ExternalCallTargetEvidence, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.symbol:
@@ -164,6 +201,17 @@ class CallSite:
             raise ValueError("CallSite target_ids must not contain duplicates")
         if any(not target for target in self.target_ids):
             raise ValueError("CallSite target_ids must not contain empty values")
+        if any(
+            evidence.target_id not in self.target_ids
+            for evidence in self.external_target_evidence
+        ):
+            raise ValueError("External call evidence must reference a CallSite target")
+        identities = [
+            (evidence.site_id, evidence.target_id, evidence.evidence_sha256)
+            for evidence in self.external_target_evidence
+        ]
+        if len(set(identities)) != len(identities):
+            raise ValueError("External call evidence must not contain duplicates")
 
     @property
     def resolution(self) -> CallResolution:
@@ -172,6 +220,15 @@ class CallSite:
         if self.target_ids:
             return "ambiguous"
         return "unresolved"
+
+    @property
+    def authoritative_target_ids(self) -> tuple[str, ...]:
+        """Targets usable for derived contracts, excluding static-only imports."""
+        external = {
+            evidence.target_id
+            for evidence in self.external_target_evidence
+        }
+        return tuple(target for target in self.target_ids if target not in external)
 
 
 @dataclass(frozen=True, slots=True)

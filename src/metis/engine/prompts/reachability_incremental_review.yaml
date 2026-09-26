@@ -9,6 +9,9 @@ omission_convention: |-
   one it means FILE. A missing nested line inherits its enclosing line. Omitted kind is direct, resolution derives from target_ids, and
   omitted complete/entrypoint are false; omitted argument_count equals len(arguments). direct_edges contains only edges
   not already represented by call target_ids.
+  external_targets names build-bound indirect-call candidates. Its target is also in target_ids, while authority,
+  artifact_sha256, evidence_sha256, build_id, site_id, confidence, resolvers, and runtime_reachability preserve why it
+  was added. CANDIDATE_STATIC means may-call navigation only, not observed execution.
   expression_table maps integer expression references to records; expand each reference at its use site before applying
   line and file_path inheritance.
   atom_table maps integer references in ids/fields/direct_id/direct_field/writes/addresses/condition_writes to strings;
@@ -23,6 +26,9 @@ discovery_graph_guidance: |-
   incomplete contract data remains uncertain and cannot establish safety.
   entrypoint marks a traversal seed; it does not prove a supported public API, attacker control, or that
   a caller may violate a handle or argument precondition.
+  An external indirect target with CANDIDATE_STATIC authority may guide the next source slice, but cannot establish
+  reachable control flow, attacker delivery, a security effect, or a terminal security result. Confirm every decisive
+  indirect edge from exact source/build evidence or runtime execution; otherwise keep it unresolved.
   syntax.macro_function_arguments preserves raw non-signature wrapper tokens referenced by every matching repository
   macro definition; it is not proof of active-build expansion or control-flow semantics. Confirm the unsafe sequence
   from the supplied facts and source.

@@ -26,20 +26,23 @@ from metis.version import __version__ as METIS_VERSION
 
 from .annotations import CodeGraphConfiguration
 from .annotations import annotate_graph
+from .external_indirect import ExternalIndirectEvidenceError
+from .external_indirect import apply as apply_external_indirect
+from .external_indirect import cache_identity as external_indirect_cache_identity
 from .progress import CODEGRAPH_DONE
 from .progress import CODEGRAPH_PROGRESS
 from .progress import CODEGRAPH_REUSED
 from .progress import CODEGRAPH_START
 from .provider import normalize_provider_name
 from .semantics import CodeGraphSemanticsCatalog
-from .store import SQLiteCodeGraphStore
 from .store import _DIAGNOSTIC
+from .store import SQLiteCodeGraphStore
 
 if TYPE_CHECKING:
     from metis.engine.repository import EngineRepository
     from metis.engine.runtime import EngineConfig
 
-CODEGRAPH_FINGERPRINT_VERSION = 2
+CODEGRAPH_FINGERPRINT_VERSION = 3
 
 logger = logging.getLogger(__name__)
 
@@ -281,6 +284,24 @@ class CodeGraphService:
                 partial_parse_warning_count,
             )
 
+        external_config = self._annotation_settings.external_indirect_call_evidence
+        if external_config is not None:
+            try:
+                external_diagnostics = apply_external_indirect(
+                    graph,
+                    config_path=external_config,
+                    codebase_path=self._config.codebase_path,
+                    progress_callback=progress_callback,
+                )
+            except ExternalIndirectEvidenceError as exc:
+                raise RuntimeError(
+                    f"External indirect-call evidence rejected: {exc}"
+                ) from exc
+            diagnostics.extend(external_diagnostics)
+            if diagnostic_callback is not None:
+                for diagnostic in external_diagnostics:
+                    diagnostic_callback(diagnostic)
+
         processed_file_tuple = tuple(processed_files)
         try:
             graph.validate_for_files(
@@ -357,6 +378,17 @@ class CodeGraphService:
         profile = self._repository.profiled_source_fingerprint
         if profile is not None:
             payload["profiled_source"] = profile
+        external_config = self._annotation_settings.external_indirect_call_evidence
+        if external_config is not None:
+            try:
+                payload["external_indirect"] = external_indirect_cache_identity(
+                    external_config,
+                    self._config.codebase_path,
+                )
+            except ExternalIndirectEvidenceError as exc:
+                raise RuntimeError(
+                    f"External indirect-call evidence rejected: {exc}"
+                ) from exc
         encoded = json.dumps(
             payload,
             sort_keys=True,

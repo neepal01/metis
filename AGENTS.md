@@ -59,6 +59,7 @@ built around a typed execution graph.
 | Triage behavior | [Triage flow](docs/triage-flow.md) |
 | Run log | [Run-log format](docs/workflow-log-format.md), `src/metis/runlog/`, and `tests/test_runlog.py` |
 | Usage accounting | `src/metis/usage/`, `tests/test_usage.py`, and `tests/test_cli_usage.py` |
+| Autonomous firmware campaign | [Firmware campaign workflow](docs/firmware-campaign.md), `src/metis_firmware_campaign/autonomous_campaign.py`, `src/metis_firmware_campaign/launcher.py`, and `tests/test_firmware_campaign_launcher.py` |
 | Engine composition or lifecycle | `src/metis/engine/core.py`, `src/metis/engine/nodes/builtins.py`, `tests/test_engine_core.py`, and `tests/test_engine_lifecycle.py` |
 | Model invocation or retry policy | `src/metis/engine/llm_runner.py`, `src/metis/chat_model_options.py`, and `tests/test_llm_runner_retry.py` |
 | Setup, tests, or contribution workflow | [Contributing](CONTRIBUTION.md) |
