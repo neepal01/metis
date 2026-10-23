@@ -809,6 +809,28 @@ def restore_candidate(candidate: Path, before: dict, backup: Path) -> dict:
     return restored
 
 
+def record_candidate_observation(
+    state: Path, stage: dict, identity: str, before: dict, after: dict
+) -> None:
+    """Retain candidate access audit separately from material stage identity."""
+    observation = {
+        "stage_id": stage["stage_id"],
+        "phase": stage["phase"],
+        "stage_identity": identity,
+        "candidate_before": before,
+        "candidate_after": after,
+    }
+    path = (
+        state
+        / "stage-audit"
+        / stage["stage_id"]
+        / identity
+        / f"{object_hash(observation)}.json"
+    )
+    if not path.exists():
+        atomic_json(path, observation)
+
+
 def verify_staged_candidate(candidate: Path) -> None:
     uri = f"file:{candidate}?mode=ro&immutable=1"
     try:
@@ -854,8 +876,11 @@ def execute_stage(
         dep["status"] not in {"COMPLETE", "REUSED"}
         for dep in dependency_receipts.values()
     )
+    dependency_blocks = unresolved_dependencies and not stage.get(
+        "continue_on_blocked_dependencies", False
+    )
     human_class, detail = check_human(stage, Path(profile_identity["locator"]).parent)
-    if current and current.get("status") == "BLOCKED" and not unresolved_dependencies and not human_class:
+    if current and current.get("status") == "BLOCKED" and not dependency_blocks and not human_class:
         retire_stage_result(state, final, current, "resolved")
         current = None
     elif current and current_evidence_needs_refresh(stage, final, current):
@@ -869,7 +894,7 @@ def execute_stage(
                     f"completed stage output changed: {stage['stage_id']}"
                 )
         return current
-    if unresolved_dependencies and not stage.get("continue_on_blocked_dependencies", False):
+    if dependency_blocks:
         block = {
             "stage_id": stage["stage_id"],
             "stage_identity": identity,
@@ -914,6 +939,7 @@ def execute_stage(
         tempfile.mkdtemp(dir=stage_root.parent, prefix=f".{stage['stage_id']}.")
     )
     lock_descriptor = None
+    preserve_control = False
     control = Path(tempfile.mkdtemp(dir=state, prefix=f".candidate-{stage['stage_id']}."))
     try:
         writer = stage["phase"] in {"CANDIDATE_BUILD", "AUTHORITATIVE_INTEGRATION", "SEVERITY_CALIBRATION", "POLICY_RECONCILIATION"}
@@ -1116,6 +1142,8 @@ def execute_stage(
             committed = candidate_state(candidate)
             if committed != after:
                 raise ContractError("atomic candidate replacement changed its identity")
+        if not writer:
+            record_candidate_observation(state, stage, identity, before, after)
         body = {
             "stage_id": stage["stage_id"],
             "phase": stage["phase"],
@@ -1123,12 +1151,12 @@ def execute_stage(
             "status": "COMPLETE",
             "input_sha256": object_hash(inputs),
             "outputs": outputs,
-            "candidate_before": before,
-            "candidate_after": after,
             "campaign_write_attempts": 0
             if stage["phase"] != "AUTHORITATIVE_INTEGRATION"
             else stage.get("campaign_write_attempts", 0),
         }
+        if writer or "candidate_before" in inputs:
+            body.update({"candidate_before": before, "candidate_after": after})
         body["receipt_sha256"] = object_hash(body)
         atomic_json(temp / "receipt.json", body)
         final.parent.mkdir(parents=True, exist_ok=True)
@@ -1149,6 +1177,14 @@ def execute_stage(
             except BaseException as error:
                 recovery["result"] = "QUARANTINED"
                 recovery["error"] = str(error)
+                if backup.exists():
+                    recovery.update(
+                        {
+                            "recovery_backup": str(backup),
+                            "recovery_backup_sha256": file_hash(backup),
+                        }
+                    )
+                    preserve_control = True
                 atomic_json(quarantine, recovery)
         failed = state / "failed-stages" / stage["stage_id"] / identity
         if not failed.exists():
@@ -1162,7 +1198,7 @@ def execute_stage(
             lock_descriptor.close()
         if temp.exists():
             shutil.rmtree(temp)
-        if control.exists():
+        if control.exists() and not preserve_control:
             shutil.rmtree(control)
 
 

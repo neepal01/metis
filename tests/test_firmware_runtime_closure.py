@@ -161,6 +161,80 @@ def test_v672_boundary_repairs(tmp_path: Path) -> None:
     assert first != second
 
 
+def test_v673_blocker_refresh_content_identity_and_failed_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    project = tmp_path / "project"
+    project.mkdir()
+    profile_path = project / "profile.json"
+    profile_path.write_text("{}")
+    candidate = project / "candidate.db"
+    with sqlite3.connect(candidate) as database:
+        database.execute("CREATE TABLE probe(value TEXT)")
+        database.execute("INSERT INTO probe VALUES('initial')")
+    state = project / "state"
+    profile = {"schema_version": "6.7", "project": {"project_id": "fixture"},
+               "automation": {"campaign_reader_limit": 1,
+                              "provider_worker_configuration_limit": 1}}
+    identity = {"locator": str(profile_path), "sha256": "a" * 64}
+    provider_runs = []
+
+    def stage(stage_id, phase="SOURCE_COLLECTION", **extra):
+        return {"stage_id": stage_id, "phase": phase,
+                "adapter": ["fixture", stage_id],
+                "required_outputs": ["result.json"], **extra}
+
+    def execute(value, deps=None):
+        return autonomous_campaign.execute_stage(
+            value, profile, identity, state, candidate, {}, {}, {}, deps or {}
+        )
+
+    def runner(command, context, work, credentials):
+        if command[1] == "writer":
+            with sqlite3.connect(context["candidate_path"]) as database:
+                database.execute("UPDATE probe SET value='advanced'")
+        elif command[1] == "provider":
+            provider_runs.append(context["provider_checkpoint_root"])
+        elif command[1] == "direct":
+            with sqlite3.connect(candidate) as database:
+                database.execute("UPDATE probe SET value='direct'")
+        (work / "result.json").write_text('{"evidence":"same"}')
+
+    monkeypatch.setattr(autonomous_campaign, "run_command", runner)
+    credential = "FIRMWARE_REVIEW_EDGE_TOKEN"
+    deps = {"blocked": {"stage_identity": "a" * 64, "receipt_sha256": "b" * 64,
+                        "status": "BLOCKED", "outputs": []}}
+    monkeypatch.delenv(credential, raising=False)
+    continuing = stage("continuing", credential_env=[credential],
+                       continue_on_blocked_dependencies=True)
+    assert execute(continuing, deps)["status"] == "BLOCKED"
+    monkeypatch.setenv(credential, "dummy")
+    assert execute(continuing, deps)["status"] == "COMPLETE"
+
+    current = stage("tickets", phase="CURRENT_TICKET_COLLECTION", refresh_on_resume=True)
+    first = execute(current)
+    provider = stage("provider", phase="METIS_FULL_SCAN")
+    execute(provider, {"tickets": first})
+    execute(stage("writer", phase="CANDIDATE_BUILD"))
+    second = execute(current)
+    execute(provider, {"tickets": second})
+    assert first["receipt_sha256"] == second["receipt_sha256"]
+    assert len(provider_runs) == 1
+
+    backups = []
+
+    def failed_restore(path, before, backup):
+        backups.append(backup)
+        raise OSError("injected")
+
+    monkeypatch.setattr(autonomous_campaign, "restore_candidate", failed_restore)
+    with pytest.raises(autonomous_campaign.ContractError):
+        execute(stage("direct"))
+    quarantine = json.loads((state / "CANDIDATE-QUARANTINED.json").read_text())
+    assert backups and backups[0].exists()
+    assert quarantine["recovery_backup_sha256"] == autonomous_campaign.file_hash(backups[0])
+
+
 def test_v67_terminal_capsule_and_checkout_containment(tmp_path: Path) -> None:
     source = tmp_path / "source"
     source.mkdir()
