@@ -42,12 +42,17 @@ test. The candidate cannot authorize programme, production, ticket, severity,
 disclosure, or root state.
 
 The campaign is fail-closed and content-addressed. Existing state requires
-`--resume`. Unchanged receipt identities are reused. Changed global profiles,
+`--resume`. Unchanged receipt identities are reused, while current-ticket and
+threat/policy collections refresh when configured per resume or at their
+bounded maximum age. Changed global profiles,
 source checkouts, selectors, or candidate identities prevent reuse; changed
 stage-specific adapters, inputs, or prerequisite receipts invalidate that
 stage and its descendants. At most eleven read-only campaign validators run
-concurrently. Candidate construction and authoritative integration are the
-only serialized candidate-writer phases.
+concurrently. Candidate construction, authoritative integration and declared
+candidate-mutating derived stages are serialized. Adapter subprocesses inherit a small
+runtime allowlist and only the credentials declared for that stage. Readers use
+isolated read-only candidate copies; writers use private staged copies which are
+verified before atomic promotion.
 
 Provider-backed stages automatically redirect the existing per-result review
 checkpoint to a durable path beneath their content-addressed stage identity.

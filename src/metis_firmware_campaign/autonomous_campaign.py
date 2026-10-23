@@ -22,6 +22,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 from metis_firmware_campaign.analysis_packet import validate as validate_analysis_packet
@@ -89,6 +90,12 @@ HUMAN_CLASSES = {
     "GENUINE_UNRESOLVED_EVIDENCE",
 }
 TERMINAL = {"COMPLETE", "REUSED", "BLOCKED"}
+CURRENT_EVIDENCE_PHASES = {"CURRENT_TICKET_COLLECTION", "THREAT_POLICY_COLLECTION"}
+RUNTIME_ENV_ALLOWLIST = {
+    "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TMP", "TEMP",
+    "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
+    "NO_PROXY", "PYTHONPATH", "VIRTUAL_ENV", "UV_CACHE_DIR", "UV_PYTHON",
+}
 
 
 class ContractError(RuntimeError):
@@ -371,6 +378,10 @@ def verify_profile(
             )
         if item["phase"] == "PACKET_VALIDATION" and not item.get("worker_adapter"):
             raise ContractError("PACKET_VALIDATION requires a worker adapter")
+        if item["phase"] in CURRENT_EVIDENCE_PHASES:
+            maximum_age = item.get("max_evidence_age_seconds", 86400)
+            if item.get("refresh_on_resume") not in {None, True, False} or not isinstance(maximum_age, int) or not 0 <= maximum_age <= 604800:
+                raise ContractError("current evidence refresh contract is invalid")
         if not item.get("required_outputs") or not isinstance(
             item["required_outputs"], list
         ):
@@ -481,6 +492,26 @@ def redact(value: str, credential_names: list[str]) -> str:
     return value
 
 
+def runtime_environment(credential_names: list[str]) -> dict[str, str]:
+    """Return a minimal environment plus only this stage's declared secrets."""
+    env = {name: os.environ[name] for name in RUNTIME_ENV_ALLOWLIST if name in os.environ}
+    for name in credential_names:
+        if os.environ.get(name):
+            env[name] = os.environ[name]
+    return env
+
+
+def command_identity(base: Path, command: list[str]) -> dict:
+    files = []
+    for value in command:
+        if "{" in value:
+            continue
+        path = absolute(base, value)
+        if path.is_file() and not path.is_symlink():
+            files.append({"locator": str(path), "sha256": file_hash(path)})
+    return {"argv": command, "files": files}
+
+
 def receipt(path: Path) -> dict | None:
     if not path.exists():
         return None
@@ -509,14 +540,13 @@ def stage_inputs(
         for value in stage.get("input_files", [])
     ]
     adapter = stage.get("adapter", [])
-    adapter_files = []
-    for value in adapter:
-        if "{" in value:
-            continue
-        path = absolute(base, value)
-        if path.is_file() and not path.is_symlink():
-            adapter_files.append({"locator": str(path), "sha256": file_hash(path)})
-    adapter_identity = object_hash({"argv": adapter, "files": adapter_files})
+    adapter_identity = object_hash(command_identity(base, adapter))
+    worker_adapter = stage.get("worker_adapter")
+    worker_identity = object_hash(command_identity(base, worker_adapter)) if worker_adapter else None
+    runtime_dependencies = [
+        material_file(base, value, f"stage runtime dependency {value}")
+        for value in stage.get("runtime_dependency_files", [])
+    ]
     inputs = {
         "format_version": FORMAT,
         "project_id": profile["project"]["project_id"],
@@ -535,6 +565,18 @@ def stage_inputs(
         "profile_schema_version": profile["schema_version"],
         "contract_release": profile_identity.get("contract_release"),
     }
+    if worker_identity:
+        inputs["worker_adapter_sha256"] = worker_identity
+    if runtime_dependencies:
+        inputs["runtime_dependency_files"] = runtime_dependencies
+    human_evidence = stage.get("human_dependency", {}).get("evidence")
+    if human_evidence:
+        path = absolute(base, human_evidence)
+        inputs["human_dependency_evidence"] = (
+            {"locator": str(path), "sha256": file_hash(path)}
+            if path.is_file() and not path.is_symlink()
+            else {"locator": str(path), "status": "MISSING"}
+        )
     # The candidate is an output of authoritative integration.  Making its
     # mutable state an input to every stage invalidates already-completed
     # provider work on the first resume.  Pre-6.3 profiles retain their frozen
@@ -582,7 +624,7 @@ def run_command(
         "reader_limit": str(context["reader_limit"]),
     }
     argv = [item.format(**variables) for item in command]
-    env = os.environ.copy()
+    env = runtime_environment(credentials)
     env["FIRMWARE_CAMPAIGN_CONTEXT"] = str(context_path)
     env["CAMPAIGN_DATABASE_URI"] = (
         f"file:{context['candidate_path']}?mode=ro&immutable=1"
@@ -726,6 +768,59 @@ def worker_run(
     }
 
 
+def retire_stage_result(state: Path, final: Path, current: dict, reason: str) -> None:
+    """Preserve a superseded complete or blocked result before recomputation."""
+    history = (
+        state / "historical-stages" / current["stage_id"]
+        / current["stage_identity"] / f"{current['receipt_sha256']}-{reason}"
+    )
+    if not history.exists():
+        history.parent.mkdir(parents=True, exist_ok=True)
+        os.replace(final, history)
+    else:
+        shutil.rmtree(final)
+
+
+def current_evidence_needs_refresh(stage: dict, final: Path, current: dict) -> bool:
+    if stage["phase"] not in CURRENT_EVIDENCE_PHASES or current.get("status") not in {"COMPLETE", "REUSED"}:
+        return False
+    if stage.get("refresh_on_resume") is True:
+        return True
+    maximum_age = stage.get("max_evidence_age_seconds", 86400)
+    if not isinstance(maximum_age, int) or not 0 <= maximum_age <= 604800:
+        raise ContractError("current evidence maximum age must be 0..604800 seconds")
+    return time.time() - (final / "receipt.json").stat().st_mtime >= maximum_age
+
+
+def restore_candidate(candidate: Path, before: dict, backup: Path) -> dict:
+    """Restore the exact pre-stage candidate after an unauthorized direct mutation."""
+    for suffix in ("-wal", "-shm", "-journal"):
+        Path(str(candidate) + suffix).unlink(missing_ok=True)
+    if before.get("exists"):
+        if not backup.exists():
+            raise ContractError("candidate recovery copy is unavailable")
+        backup.chmod(0o600)
+        os.replace(backup, candidate)
+    elif candidate.exists():
+        candidate.unlink()
+    restored = candidate_state(candidate)
+    if restored != before:
+        raise ContractError("candidate recovery did not restore the prior identity")
+    return restored
+
+
+def verify_staged_candidate(candidate: Path) -> None:
+    uri = f"file:{candidate}?mode=ro&immutable=1"
+    try:
+        with sqlite3.connect(uri, uri=True) as database:
+            quick = database.execute("PRAGMA quick_check").fetchall()
+            foreign = database.execute("PRAGMA foreign_key_check").fetchall()
+    except sqlite3.DatabaseError as error:
+        raise ContractError("staged candidate is not a valid SQLite database") from error
+    if quick != [("ok",)] or foreign:
+        raise ContractError("staged candidate failed SQLite integrity checks")
+
+
 def execute_stage(
     stage: dict,
     profile: dict,
@@ -751,7 +846,21 @@ def execute_stage(
     identity = object_hash(inputs)
     stage_root = state / "stages" / stage["stage_id"]
     final = stage_root / identity
+    quarantine = state / "CANDIDATE-QUARANTINED.json"
+    if quarantine.exists():
+        raise ContractError(f"candidate is quarantined pending recovery: {quarantine}")
     current = receipt(final / "receipt.json")
+    unresolved_dependencies = any(
+        dep["status"] not in {"COMPLETE", "REUSED"}
+        for dep in dependency_receipts.values()
+    )
+    human_class, detail = check_human(stage, Path(profile_identity["locator"]).parent)
+    if current and current.get("status") == "BLOCKED" and not unresolved_dependencies and not human_class:
+        retire_stage_result(state, final, current, "resolved")
+        current = None
+    elif current and current_evidence_needs_refresh(stage, final, current):
+        retire_stage_result(state, final, current, "refresh")
+        current = None
     if current:
         for item in current.get("outputs", []):
             path = regular(final / item["locator"], "reused stage output")
@@ -760,10 +869,7 @@ def execute_stage(
                     f"completed stage output changed: {stage['stage_id']}"
                 )
         return current
-    if any(
-        dep["status"] not in {"COMPLETE", "REUSED"}
-        for dep in dependency_receipts.values()
-    ) and not stage.get("continue_on_blocked_dependencies", False):
+    if unresolved_dependencies and not stage.get("continue_on_blocked_dependencies", False):
         block = {
             "stage_id": stage["stage_id"],
             "stage_identity": identity,
@@ -777,7 +883,6 @@ def execute_stage(
         final.mkdir(parents=True)
         atomic_json(final / "receipt.json", block)
         return block
-    human_class, detail = check_human(stage, Path(profile_identity["locator"]).parent)
     if human_class:
         blocker_id = object_hash({"class": human_class, "detail": detail})
         shared = state / "blockers" / f"{blocker_id}.json"
@@ -809,6 +914,7 @@ def execute_stage(
         tempfile.mkdtemp(dir=stage_root.parent, prefix=f".{stage['stage_id']}.")
     )
     lock_descriptor = None
+    control = Path(tempfile.mkdtemp(dir=state, prefix=f".candidate-{stage['stage_id']}."))
     try:
         writer = stage["phase"] in {"CANDIDATE_BUILD", "AUTHORITATIVE_INTEGRATION", "SEVERITY_CALIBRATION", "POLICY_RECONCILIATION"}
         if writer:
@@ -817,6 +923,15 @@ def execute_stage(
             lock_descriptor = lock_path.open("a+")
             fcntl.flock(lock_descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
         before = candidate_state(candidate)
+        backup = control / "candidate-prior.db"
+        if before.get("exists"):
+            shutil.copy2(candidate, backup)
+            backup.chmod(0o400)
+        execution_candidate = control / "candidate-stage.db"
+        if before.get("exists"):
+            shutil.copy2(candidate, execution_candidate)
+        if not writer and execution_candidate.exists():
+            execution_candidate.chmod(0o400)
         dependency_outputs = {}
         for dep, value in dependency_receipts.items():
             root = state / "stages" / dep / value["stage_identity"]
@@ -826,7 +941,7 @@ def execute_stage(
             ]
         context = {
             **inputs,
-            "candidate_path": str(candidate),
+            "candidate_path": str(execution_candidate),
             "profile_locator": profile_identity["locator"],
             "project_directory": str(Path(profile_identity["locator"]).parent),
             "reader_limit": min(
@@ -883,11 +998,13 @@ def execute_stage(
             run_existing_report_followup(context, temp)
         else:
             run_command(stage["adapter"], context, temp, credentials)
-        after = candidate_state(candidate)
+        after = candidate_state(execution_candidate)
         if not writer and after != before:
             raise ContractError(
                 f"non-authoritative stage changed candidate: {stage['stage_id']}"
             )
+        if candidate_state(candidate) != before:
+            raise ContractError(f"stage changed the authoritative candidate directly: {stage['stage_id']}")
         if (
             stage["phase"] == "AUTHORITATIVE_INTEGRATION"
             and after.get("exists")
@@ -902,6 +1019,11 @@ def execute_stage(
             raise ContractError(
                 "candidate builder did not generate the project candidate"
             )
+        if not writer:
+            if execution_candidate.exists():
+                execution_candidate.unlink()
+            if backup.exists():
+                backup.unlink()
         outputs = []
         ignored = {"context.json", "stdout.log", "stderr.log"}
         for path in sorted(temp.rglob("*")):
@@ -986,6 +1108,14 @@ def execute_stage(
                 raise ContractError(
                     f"stage deterministic output pair differs: {stage['stage_id']}:{pair}"
                 )
+        if writer:
+            if profile.get("schema_version") not in {"4", "5"}:
+                verify_staged_candidate(execution_candidate)
+            execution_candidate.chmod(0o600)
+            os.replace(execution_candidate, candidate)
+            committed = candidate_state(candidate)
+            if committed != after:
+                raise ContractError("atomic candidate replacement changed its identity")
         body = {
             "stage_id": stage["stage_id"],
             "phase": stage["phase"],
@@ -1005,16 +1135,35 @@ def execute_stage(
         os.replace(temp, final)
         return body
     except BaseException:
+        recovery = {"candidate_before": before if "before" in locals() else None}
+        changed = False
+        if "before" in locals():
+            try:
+                changed = candidate_state(candidate) != before
+            except ContractError:
+                changed = True
+        if changed:
+            try:
+                recovery["candidate_restored"] = restore_candidate(candidate, before, backup)
+                recovery["result"] = "RESTORED"
+            except BaseException as error:
+                recovery["result"] = "QUARANTINED"
+                recovery["error"] = str(error)
+                atomic_json(quarantine, recovery)
         failed = state / "failed-stages" / stage["stage_id"] / identity
         if not failed.exists():
             failed.parent.mkdir(parents=True, exist_ok=True)
             os.replace(temp, failed)
+        if recovery.get("result"):
+            atomic_json(failed / "candidate-recovery.json", recovery)
         raise
     finally:
         if lock_descriptor:
             lock_descriptor.close()
         if temp.exists():
             shutil.rmtree(temp)
+        if control.exists():
+            shutil.rmtree(control)
 
 
 def run(args: argparse.Namespace) -> dict:

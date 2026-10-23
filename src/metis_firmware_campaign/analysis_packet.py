@@ -37,6 +37,11 @@ LAYERS = {
     "HISTORICAL_TICKETS_POCS",
     "CURRENT_TICKETS",
 }
+CAPSULE_DEPS = {
+    "DECISIVE_SOURCE_FILE", "BUILD_PLATFORM_CONFIG_TOOLCHAIN",
+    "PROGRAMME_POLICY", "THREAT_MODEL", "KNOWLEDGE_ROOT",
+    "HISTORICAL_TICKETS_POCS", "CURRENT_TICKETS", "GRAPH_ARTIFACT",
+}
 OBSERVATIONS = {"POSITIVE", "NEGATIVE_PATCHED", "CLEAN_RERUN"}
 SCOPES = {"IN_SCOPE", "OOS", "NOT_APPLICABLE", "UNRESOLVED"}
 SCANNER = {"SUPPORTED", "OVERSTATED", "UNSUPPORTED", "UNRESOLVED"}
@@ -57,6 +62,12 @@ COUNTEREVIDENCE_CATEGORIES = {
     "OBJECT_LIFETIME_REMAINS_VALID", "SCANNER_WRONG_OBJECT_OR_API",
     "CLAIMED_OPERATION_SINK_OR_EFFECT_ABSENT",
 }
+SUPPORTED_CONTRACTS = {
+    "6", "6.2", "6.2.0", "6.3", "6.3.0", "6.4", "6.4.0",
+    "6.5", "6.5.0", "6.6", "6.6.0", "6.6.1", "6.7", "6.7.0",
+}
+LEGACY_CONTRACTS = {None, "5", "5.0"}
+COUNTEREVIDENCE_CONTRACTS = SUPPORTED_CONTRACTS - {"6"}
 
 
 def canon(value):
@@ -95,7 +106,16 @@ def validate(packet, source_bindings):
     errors = []
     records = packet.get("records", [])
     integrator = packet.get("authoritative_integrator") is True
-    v62 = packet.get("contract_version") in {"6.2", "6.2.0", "6.3", "6.3.0", "6.4", "6.4.0", "6.5", "6.5.0", "6.6", "6.6.0", "6.6.1", "6.7", "6.7.0"}
+    version = packet.get("contract_version")
+    v6 = version in SUPPORTED_CONTRACTS
+    v62 = version in COUNTEREVIDENCE_CONTRACTS
+    if not v6 and version not in LEGACY_CONTRACTS:
+        errors.append("unsupported analysis-packet contract version")
+    if v6 and any(
+        record.get("decision_status") == "TERMINAL"
+        for record in records if isinstance(record, dict)
+    ) and packet.get("review_provenance", {}).get("subject_binding") != "SCANNER_RECORD":
+        errors.append("v6 terminal packet lacks generalized scanner-record review binding")
     if not records or not isinstance(records, list):
         errors.append("records must be non-empty")
     if packet.get("campaign_write_attempts") != 0:
@@ -112,9 +132,44 @@ def validate(packet, source_bindings):
         if record.get("scanner_claim_status") not in SCANNER:
             errors.append(f"invalid scanner status: {rid}")
         terminal = record.get("decision_status") == "TERMINAL"
+        sources = record.get("decisive_sources", [])
+        if v6 and terminal:
+            capsule = record.get("evidence_capsule", {})
+            needed = {
+                "proof_tuple_or_counterevidence", "decisive_source_ranges",
+                "build_id", "configuration_hash", "dependency_hashes",
+                "review_provenance", "reopen_conditions", "content_hash",
+            }
+            if (
+                set(capsule) != needed
+                or not capsule.get("decisive_source_ranges")
+                or not capsule.get("review_provenance")
+                or not capsule.get("reopen_conditions")
+            ):
+                errors.append(f"v6 terminal evidence capsule incomplete: {rid}")
+            if any(len(str(capsule.get(key, ""))) != 64 for key in ("configuration_hash", "content_hash")):
+                errors.append(f"v6 capsule hash invalid: {rid}")
+            dependencies = capsule.get("dependency_hashes", {})
+            if set(dependencies) != CAPSULE_DEPS or any(len(str(value)) != 64 for value in dependencies.values()):
+                errors.append(f"v6 capsule dependencies invalid: {rid}")
+            proof_or_counter = record.get("proof_tuple") or record.get("exact_counterevidence") or record.get("residual_defect")
+            if capsule.get("proof_tuple_or_counterevidence") != proof_or_counter:
+                errors.append(f"v6 capsule proof/counterevidence mismatch: {rid}")
+            review = capsule.get("review_provenance", {})
+            if review.get("subject_kind") != "SCANNER_RECORD" or review.get("subject_id") != rid or len(str(review.get("review_hash", ""))) != 64:
+                errors.append(f"v6 capsule review binding invalid: {rid}")
+            by_source = {
+                (item.get("component_id"), item.get("path"), item.get("line"), item.get("file_sha256"))
+                for item in sources
+            }
+            by_capsule = {
+                (item.get("component_id"), item.get("path"), item.get("start_line"), item.get("content_hash"))
+                for item in capsule.get("decisive_source_ranges", [])
+            }
+            if by_source != by_capsule:
+                errors.append(f"v6 capsule decisive range mismatch: {rid}")
         if record.get("source_reread") is not True:
             errors.append(f"exact source was not reread: {rid}")
-        sources = record.get("decisive_sources", [])
         if terminal and not sources:
             errors.append(f"terminal record lacks decisive source: {rid}")
         for source in sources:
