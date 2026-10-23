@@ -149,7 +149,7 @@ def absolute(base: Path, value: str) -> Path:
 
 def material_file(base: Path, value: str, label: str) -> dict:
     path = regular(absolute(base, value), label)
-    inputs = {
+    return {
         "locator": str(path),
         "sha256": file_hash(path),
         "size": path.stat().st_size,
@@ -687,8 +687,12 @@ def run_severity_calibration(context: dict, work: Path) -> None:
     result = subprocess.run([sys.executable, str(script), "--profile", context["profile_locator"],
                              "--candidate", context["candidate_path"], "--output", str(work)],
                             cwd=context["project_directory"], text=True, capture_output=True, check=False)
-    (work / "stdout.log").write_text(result.stdout);(work / "stderr.log").write_text(result.stderr)
-    if result.returncode:raise ContractError(f"generic severity calibration failed: {result.stderr.strip()}")
+    (work / "stdout.log").write_text(result.stdout)
+    (work / "stderr.log").write_text(result.stderr)
+    if result.returncode:
+        raise ContractError(
+            f"generic severity calibration failed: {result.stderr.strip()}"
+        )
 
 
 def run_policy_reconciliation(context: dict, work: Path) -> None:
@@ -697,8 +701,12 @@ def run_policy_reconciliation(context: dict, work: Path) -> None:
     if len(evidence) != 1:
         raise ContractError("POLICY_RECONCILIATION requires exactly one collected policy input")
     result = subprocess.run([sys.executable, str(script), "--candidate", context["candidate_path"], "--evidence", str(evidence[0]), "--project-directory", context["project_directory"], "--output", str(work)], cwd=context["project_directory"], text=True, capture_output=True, check=False)
-    (work / "stdout.log").write_text(result.stdout);(work / "stderr.log").write_text(result.stderr)
-    if result.returncode:raise ContractError(f"generic policy reconciliation failed: {result.stderr.strip()}")
+    (work / "stdout.log").write_text(result.stdout)
+    (work / "stderr.log").write_text(result.stderr)
+    if result.returncode:
+        raise ContractError(
+            f"generic policy reconciliation failed: {result.stderr.strip()}"
+        )
 
 
 def run_population_scoped_reporting(context: dict, work: Path) -> None:
@@ -711,8 +719,12 @@ def run_population_scoped_reporting(context: dict, work: Path) -> None:
                              "--output-json", str(work / "POPULATION-SCOPED-REPORT.json"),
                              "--output-markdown", str(work / "POPULATION-SCOPED-REPORT.md")],
                             cwd=context["project_directory"], text=True, capture_output=True, check=False)
-    (work / "stdout.log").write_text(result.stdout);(work / "stderr.log").write_text(result.stderr)
-    if result.returncode:raise ContractError(f"generic population-scoped reporting failed: {result.stderr.strip()}")
+    (work / "stdout.log").write_text(result.stdout)
+    (work / "stderr.log").write_text(result.stderr)
+    if result.returncode:
+        raise ContractError(
+            f"generic population-scoped reporting failed: {result.stderr.strip()}"
+        )
 
 
 def run_existing_report_followup(context: dict, work: Path) -> None:
@@ -729,8 +741,12 @@ def run_existing_report_followup(context: dict, work: Path) -> None:
     if routing:
         command += ["--routing-evidence", routing[0]]
     result = subprocess.run(command, cwd=context["project_directory"], text=True, capture_output=True, check=False)
-    (work / "stdout.log").write_text(result.stdout);(work / "stderr.log").write_text(result.stderr)
-    if result.returncode:raise ContractError(f"generic existing-report follow-up failed: {result.stderr.strip()}")
+    (work / "stdout.log").write_text(result.stdout)
+    (work / "stderr.log").write_text(result.stderr)
+    if result.returncode:
+        raise ContractError(
+            f"generic existing-report follow-up failed: {result.stderr.strip()}"
+        )
 
 
 def worker_run(

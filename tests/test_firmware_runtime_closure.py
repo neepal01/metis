@@ -16,6 +16,19 @@ from metis_firmware_campaign import autonomous_campaign
 from metis_firmware_campaign.analysis_packet import validate as validate_analysis_packet
 
 
+def test_campaign_material_file_identity_is_returned(tmp_path: Path) -> None:
+    source = tmp_path / "evidence.json"
+    source.write_text('{"evidence":"bound"}')
+
+    material = autonomous_campaign.material_file(tmp_path, source.name, "evidence")
+
+    assert material == {
+        "locator": str(source),
+        "sha256": autonomous_campaign.file_hash(source),
+        "size": source.stat().st_size,
+    }
+
+
 def test_resume_repeats_zero_completed_provider_calls(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()
