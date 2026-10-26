@@ -29,6 +29,185 @@ def test_campaign_material_file_identity_is_returned(tmp_path: Path) -> None:
     }
 
 
+def test_shipped_runtime_manifest_matches_executing_runtime() -> None:
+    verified = autonomous_campaign.verify_runtime_identity_manifest(
+        autonomous_campaign.default_runtime_manifest()
+    )
+    assert len(verified["runtime_identity_sha256"]) == 64
+
+
+def test_versioned_output_contracts_are_isolated_and_standalone_parity_bound() -> None:
+    assert autonomous_campaign.versioned_output_contract_sha256() == (
+        autonomous_campaign.VERSIONED_OUTPUT_CONTRACT_SHA256
+    )
+    assert "policy-reconciliation-input.json" not in (
+        autonomous_campaign.V63_OUTPUTS["collect-threat-policy"]
+    )
+    assert "policy-reconciliation-input.json" not in (
+        autonomous_campaign.V65_OUTPUTS["collect-threat-policy"]
+    )
+    assert "policy-reconciliation-input.json" in (
+        autonomous_campaign.V66_OUTPUTS["collect-threat-policy"]
+    )
+    assert autonomous_campaign.V6_OUTPUTS["validate-packets"] < (
+        autonomous_campaign.V62_OUTPUTS["validate-packets"]
+    )
+    contracts = [
+        autonomous_campaign.versioned_outputs(version)
+        for version in ("6", "6.2", "6.3", "6.4", "6.5", "6.6", "6.6.1", "6.7")
+    ]
+    for index, contract in enumerate(contracts):
+        for other in contracts[index + 1 :]:
+            assert all(
+                contract.get(stage_id) is not other.get(stage_id)
+                for stage_id in set(contract) & set(other)
+            )
+
+
+def test_provider_runtime_identity_precedes_cache_reuse(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    runtime = tmp_path / "runtime"
+    for source_root in autonomous_campaign.RUNTIME_SOURCE_ROOTS:
+        (runtime / source_root).mkdir(parents=True)
+    implementation = runtime / "src/metis/provider.py"
+    implementation.write_text("IMPLEMENTATION = 1\n")
+    (runtime / "src/metis_firmware_campaign/runtime.py").write_text(
+        "RUNTIME = 1\n"
+    )
+    (runtime / "pyproject.toml").write_text(
+        '[project]\nname="fixture"\nversion="1"\ndependencies=[]\n'
+    )
+    (runtime / "uv.lock").write_text("version = 1\nrevision = 1\n")
+    manifest = runtime / autonomous_campaign.RUNTIME_IDENTITY_FILE
+
+    def seal_runtime() -> None:
+        autonomous_campaign.atomic_json(
+            manifest,
+            autonomous_campaign.runtime_identity(
+                runtime,
+                autonomous_campaign.RUNTIME_SOURCE_ROOTS,
+                autonomous_campaign.RUNTIME_FILES,
+            ),
+        )
+
+    seal_runtime()
+    monkeypatch.setattr(
+        autonomous_campaign, "default_runtime_manifest", lambda: manifest
+    )
+    monkeypatch.setenv("FIRMWARE_CAMPAIGN_PROVIDER_TEST", "dummy")
+    profile_path = tmp_path / "profile.json"
+    profile_path.write_text("{}")
+    candidate = tmp_path / "candidate.db"
+    state = tmp_path / "state"
+    stage = {
+        "stage_id": "metis-full",
+        "phase": "METIS_FULL_SCAN",
+        "adapter": [sys.executable, "fixture"],
+        "credential_env": ["FIRMWARE_CAMPAIGN_PROVIDER_TEST"],
+        "required_outputs": ["result.json"],
+    }
+    profile = {
+        "schema_version": "6.7",
+        "project": {"project_id": "fixture"},
+        "automation": {
+            "campaign_reader_limit": 1,
+            "provider_worker_configuration_limit": 1,
+            "provider_execution_mode": "LIVE",
+            "stages": [stage],
+        },
+    }
+    identity = {"locator": str(profile_path), "sha256": "a" * 64}
+    executions = []
+
+    def runner(command, context, work, credentials):
+        executions.append(context["runtime_dependency_files"][0])
+        (work / "result.json").write_text('{"result":"complete"}')
+
+    monkeypatch.setattr(autonomous_campaign, "run_command", runner)
+    args = (stage, profile, identity, state, candidate, {}, {}, {}, {})
+    first = autonomous_campaign.execute_stage(*args)
+    reused = autonomous_campaign.execute_stage(*args)
+    assert first["receipt_sha256"] == reused["receipt_sha256"]
+    assert len(executions) == 1
+
+    ambiguous_stage = {key: value for key, value in stage.items() if key != "credential_env"}
+    ambiguous_profile = {
+        **profile,
+        "automation": {
+            **profile["automation"],
+            "stages": [ambiguous_stage],
+        },
+    }
+    ambiguous_profile["automation"].pop("provider_execution_mode")
+    with pytest.raises(autonomous_campaign.ContractError, match="requires explicit"):
+        autonomous_campaign.stage_inputs(
+            ambiguous_stage, ambiguous_profile, identity, state, candidate, {}, {}, {}, {}
+        )
+
+    alternate_bin = tmp_path / "alternate/bin"
+    alternate_bin.mkdir(parents=True)
+    (alternate_bin / "python").symlink_to(sys.executable)
+    alternate_stage = {**stage, "adapter": [str(alternate_bin / "python"), "fixture"]}
+    with pytest.raises(
+        autonomous_campaign.ContractError, match="different Python environment"
+    ):
+        autonomous_campaign.stage_inputs(
+            alternate_stage, profile, identity, state, candidate, {}, {}, {}, {}
+        )
+
+    project_venv = tmp_path / ".venv/bin"
+    project_venv.mkdir(parents=True)
+    (project_venv / "python").symlink_to(sys.executable)
+    relative_stage = {**stage, "adapter": [".venv/bin/python", "fixture"]}
+    with pytest.raises(
+        autonomous_campaign.ContractError, match="different Python environment"
+    ):
+        autonomous_campaign.stage_inputs(
+            relative_stage, profile, identity, state, candidate, {}, {}, {}, {}
+        )
+
+    monkeypatch.setenv("PATH", ".venv/bin")
+    path_stage = {**stage, "adapter": ["python", "fixture"]}
+    with pytest.raises(
+        autonomous_campaign.ContractError, match="different Python environment"
+    ):
+        autonomous_campaign.stage_inputs(
+            path_stage, profile, identity, state, candidate, {}, {}, {}, {}
+        )
+    assert len(executions) == 1
+    monkeypatch.delenv("PATH")
+
+    actual = Path(sys.executable).absolute()
+    assert autonomous_campaign.command_executable(
+        actual.parent, [f"./{actual.name}"], autonomous_campaign.runtime_environment([])
+    ) == actual
+
+    coordinator = tmp_path / "coordinator"
+    child = tmp_path / "child"
+    coordinator.mkdir()
+    child.mkdir()
+    (coordinator / "python").symlink_to(sys.executable)
+    monkeypatch.chdir(coordinator)
+    with pytest.raises(
+        autonomous_campaign.ContractError, match="provider-backed adapter executable"
+    ):
+        autonomous_campaign.command_executable(
+            child, ["./python"], autonomous_campaign.runtime_environment([])
+        )
+
+    implementation.write_text("IMPLEMENTATION = 2\n")
+    with pytest.raises(autonomous_campaign.ContractError, match="manifest is stale"):
+        autonomous_campaign.execute_stage(*args)
+    assert len(executions) == 1
+
+    seal_runtime()
+    changed = autonomous_campaign.execute_stage(*args)
+    assert changed["stage_identity"] != first["stage_identity"]
+    assert len(executions) == 2
+    assert len(list((state / "stages/metis-full").glob("*/receipt.json"))) == 2
+
+
 def test_resume_repeats_zero_completed_provider_calls(tmp_path: Path) -> None:
     project = tmp_path / "project"
     project.mkdir()

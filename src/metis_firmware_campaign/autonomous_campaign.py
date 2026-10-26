@@ -15,14 +15,18 @@ import argparse
 import concurrent.futures
 import fcntl
 import hashlib
+import importlib.metadata
 import json
 import os
+import platform
+import re
 import shutil
 import sqlite3
 import subprocess
 import sys
 import tempfile
 import time
+import tomllib
 from pathlib import Path
 
 from metis_firmware_campaign.analysis_packet import validate as validate_analysis_packet
@@ -39,29 +43,36 @@ V6_OUTPUTS = {
     "integrate": {"integration.packet.json", "root-fingerprints.json", "fts-index-receipt.json"},
     "reproduce": {"reproduction-frontier.json", "backend-capabilities.json", "rerun-manifests.json", "reproducer-reuse.json", "candidate-patch-state.json"},
 }
-V62_OUTPUTS = dict(V6_OUTPUTS)
+
+
+def copy_output_contract(outputs: dict[str, set[str]]) -> dict[str, set[str]]:
+    """Return independent sets so one schema version cannot mutate another."""
+    return {stage_id: set(names) for stage_id, names in outputs.items()}
+
+
+V62_OUTPUTS = copy_output_contract(V6_OUTPUTS)
 V62_OUTPUTS["validate-packets"] = V6_OUTPUTS["validate-packets"] | {
     "fp-no-bug-audits.json",
     "classification-reopen-proposals.json",
     "terminal-change-anomaly-gate.json",
 }
-V63_OUTPUTS = dict(V62_OUTPUTS)
+V63_OUTPUTS = copy_output_contract(V62_OUTPUTS)
 V63_OUTPUTS["collect-source"] |= {"documentation-manifest.json", "component-registry.json"}
 V63_OUTPUTS["collect-threat-policy"] |= {"security-properties.json", "programme-rules.json", "advisory-fix-regression.json", "programme-threat-comparison.json"}
 V63_OUTPUTS["build-candidate"] |= {"independent-rebuild.json"}
 V63_OUTPUTS["integrate"] |= {"root-property-mappings.json", "variant-searches.json", "scope-invalidation.json"}
 V63_OUTPUTS["reproduce"] |= {"control-triplets.json"}
 V63_OUTPUTS["package-seal"] = {"candidate-a.db", "candidate-b.db", "candidate-a.dump", "candidate-b.dump", "report-a.md", "report-b.md", "delivery-a.json", "delivery-b.json", "packages-a/manifest.json", "packages-b/manifest.json", "validation-gates.json", "current-frontier.json", "final-receipts.json"}
-V64_OUTPUTS = dict(V63_OUTPUTS)
+V64_OUTPUTS = copy_output_contract(V63_OUTPUTS)
 V64_OUTPUTS["package-export"] = {"INDEX.json", "INDEX.md", "VALIDATION-RECEIPT.json"}
-V65_OUTPUTS = dict(V64_OUTPUTS)
+V65_OUTPUTS = copy_output_contract(V64_OUTPUTS)
 V65_OUTPUTS["severity-calibration"] = {"SEVERITY-INDEX.json", "SEVERITY-VALIDATION.json"}
-V66_OUTPUTS = dict(V65_OUTPUTS)
+V66_OUTPUTS = copy_output_contract(V65_OUTPUTS)
 V66_OUTPUTS["collect-threat-policy"] |= {"policy-reconciliation-input.json"}
 V66_OUTPUTS["policy-reconciliation"] = {"POLICY-INDEX.json", "POC-EVIDENCE-INDEX.json", "NOVELTY-INDEX.json", "POLICY-VALIDATION.json"}
-V661_OUTPUTS = dict(V66_OUTPUTS)
+V661_OUTPUTS = copy_output_contract(V66_OUTPUTS)
 V661_OUTPUTS["population-report"] = {"POPULATION-SCOPED-REPORT.json", "POPULATION-SCOPED-REPORT.md"}
-V67_OUTPUTS = dict(V661_OUTPUTS)
+V67_OUTPUTS = copy_output_contract(V661_OUTPUTS)
 V67_OUTPUTS["existing-report-followup"] = {"EXISTING-REPORT-FOLLOWUP-INDEX.json", "EXISTING-REPORT-FOLLOWUP-INDEX.md", "FOLLOWUP-VALIDATION.json"}
 PHASES = {
     "SOURCE_COLLECTION",
@@ -91,11 +102,52 @@ HUMAN_CLASSES = {
 }
 TERMINAL = {"COMPLETE", "REUSED", "BLOCKED"}
 CURRENT_EVIDENCE_PHASES = {"CURRENT_TICKET_COLLECTION", "THREAT_POLICY_COLLECTION"}
+METIS_PROVIDER_PHASES = {
+    "METIS_HEALTH",
+    "METIS_CALIBRATION_1",
+    "METIS_CALIBRATION_20",
+    "METIS_CALIBRATION_100",
+    "METIS_FULL_SCAN",
+}
+PROVIDER_EXECUTION_MODE_FORMAT = "metis-provider-execution-mode-v1"
+PROVIDER_EXECUTION_MODES = {"LIVE", "FROZEN_REPLAY"}
+RUNTIME_IDENTITY_FORMAT = "metis-firmware-runtime-identity-v1"
+RUNTIME_IDENTITY_FILE = "runtime-identity-v1.json"
+VERSIONED_OUTPUT_CONTRACT_SHA256 = (
+    "96093e39e257362073f61be2805c66ee906f6dd3ab630b144ef9494e6da54f98"
+)
+RUNTIME_SOURCE_ROOTS = ("src/metis", "src/metis_firmware_campaign")
+RUNTIME_FILES = ("pyproject.toml", "uv.lock")
+RUNTIME_IGNORED_PARTS = frozenset({"__pycache__", ".DS_Store"})
 RUNTIME_ENV_ALLOWLIST = {
     "PATH", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "TMP", "TEMP",
     "SSL_CERT_FILE", "SSL_CERT_DIR", "REQUESTS_CA_BUNDLE", "CURL_CA_BUNDLE",
     "NO_PROXY", "PYTHONPATH", "VIRTUAL_ENV", "UV_CACHE_DIR", "UV_PYTHON",
 }
+
+
+def versioned_outputs(schema_version: str) -> dict[str, set[str]]:
+    return {
+        "6": V6_OUTPUTS,
+        "6.2": V62_OUTPUTS,
+        "6.3": V63_OUTPUTS,
+        "6.4": V64_OUTPUTS,
+        "6.5": V65_OUTPUTS,
+        "6.6": V66_OUTPUTS,
+        "6.6.1": V661_OUTPUTS,
+        "6.7": V67_OUTPUTS,
+    }[schema_version]
+
+
+def versioned_output_contract_sha256() -> str:
+    normalized = {
+        version: {
+            stage_id: sorted(names)
+            for stage_id, names in sorted(versioned_outputs(version).items())
+        }
+        for version in ("6", "6.2", "6.3", "6.4", "6.5", "6.6", "6.6.1", "6.7")
+    }
+    return object_hash(normalized)
 
 
 class ContractError(RuntimeError):
@@ -154,6 +206,232 @@ def material_file(base: Path, value: str, label: str) -> dict:
         "sha256": file_hash(path),
         "size": path.stat().st_size,
     }
+
+
+def _runtime_members(root: Path, source_roots: tuple[str, ...]) -> list[dict]:
+    members = []
+    for value in source_roots:
+        source_root = absolute(root, value)
+        try:
+            source_root.relative_to(root)
+        except ValueError as error:
+            raise ContractError("runtime source root escapes runtime checkout") from error
+        if source_root.is_symlink() or not source_root.is_dir():
+            raise ContractError(f"runtime source root is unavailable: {value}")
+        for path in sorted(source_root.rglob("*")):
+            relative = path.relative_to(root)
+            if any(part in RUNTIME_IGNORED_PARTS for part in relative.parts):
+                continue
+            if path.suffix in {".pyc", ".pyo"}:
+                continue
+            if path.is_symlink():
+                raise ContractError(f"runtime source member is a symlink: {relative}")
+            if path.is_dir():
+                continue
+            if not path.is_file():
+                raise ContractError(f"runtime source member is not regular: {relative}")
+            members.append(
+                {
+                    "path": relative.as_posix(),
+                    "sha256": file_hash(path),
+                    "size": path.stat().st_size,
+                }
+            )
+    if not members:
+        raise ContractError("runtime identity contains no source members")
+    return members
+
+
+def _direct_dependency_versions(pyproject: Path) -> dict[str, str]:
+    project = tomllib.loads(pyproject.read_text()).get("project", {})
+    names = []
+    for requirement in project.get("dependencies", []):
+        match = re.match(r"[A-Za-z0-9_.-]+", requirement)
+        if match:
+            names.append(match.group(0))
+    versions = {}
+    for name in sorted(set(names), key=lambda value: value.lower()):
+        try:
+            versions[name] = importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError as error:
+            raise ContractError(f"runtime dependency is not installed: {name}") from error
+    return versions
+
+
+def _locked_installed_dependency_versions(uv_lock: Path) -> list[dict[str, str]]:
+    locked = {
+        re.sub(r"[-_.]+", "-", item["name"]).lower()
+        for item in tomllib.loads(uv_lock.read_text()).get("package", [])
+    }
+    installed = {}
+    for distribution in importlib.metadata.distributions():
+        name = distribution.metadata.get("Name")
+        if not name:
+            continue
+        canonical_name = re.sub(r"[-_.]+", "-", name).lower()
+        if canonical_name in locked:
+            installed[canonical_name] = distribution.version
+    return [
+        {"name": name, "version": installed[name]}
+        for name in sorted(installed)
+    ]
+
+
+def runtime_identity(
+    root: Path, source_roots: tuple[str, ...], runtime_files: tuple[str, ...]
+) -> dict:
+    if root.is_symlink() or not root.is_dir():
+        raise ContractError(f"runtime root is unavailable: {root}")
+    root = root.resolve()
+    members = _runtime_members(root, source_roots)
+    files = [
+        material_file(root, value, f"runtime file {value}")
+        for value in runtime_files
+    ]
+    pyproject = regular(root / "pyproject.toml", "runtime pyproject")
+    uv_lock = regular(root / "uv.lock", "runtime lockfile")
+    executable = regular(Path(sys.executable).resolve(), "runtime Python executable")
+    locked_dependencies = _locked_installed_dependency_versions(uv_lock)
+    body = {
+        "format_version": RUNTIME_IDENTITY_FORMAT,
+        "runtime_root": ".",
+        "source_roots": list(source_roots),
+        "runtime_files": list(runtime_files),
+        "source_file_count": len(members),
+        "source_tree_sha256": object_hash(members),
+        "runtime_files_sha256": object_hash(
+            [
+                {
+                    "path": Path(item["locator"]).relative_to(root).as_posix(),
+                    "sha256": item["sha256"],
+                    "size": item["size"],
+                }
+                for item in files
+            ]
+        ),
+        "python": {
+            "implementation": platform.python_implementation(),
+            "version": platform.python_version(),
+            "executable_sha256": file_hash(executable),
+        },
+        "direct_dependency_versions": _direct_dependency_versions(pyproject),
+        "locked_installed_dependency_count": len(locked_dependencies),
+        "locked_installed_dependencies_sha256": object_hash(locked_dependencies),
+    }
+    body["runtime_identity_sha256"] = object_hash(body)
+    return body
+
+
+def verify_runtime_identity_manifest(path: Path) -> dict:
+    manifest = json.loads(regular(path, "runtime identity manifest").read_text())
+    allowed = {
+        "format_version",
+        "runtime_root",
+        "source_roots",
+        "runtime_files",
+        "source_file_count",
+        "source_tree_sha256",
+        "runtime_files_sha256",
+        "python",
+        "direct_dependency_versions",
+        "locked_installed_dependency_count",
+        "locked_installed_dependencies_sha256",
+        "runtime_identity_sha256",
+    }
+    if not isinstance(manifest, dict) or set(manifest) != allowed:
+        raise ContractError("runtime identity manifest has an invalid shape")
+    if manifest.get("format_version") != RUNTIME_IDENTITY_FORMAT:
+        raise ContractError("runtime identity manifest has an unsupported format")
+    source_roots = tuple(manifest.get("source_roots") or ())
+    runtime_files = tuple(manifest.get("runtime_files") or ())
+    if source_roots != RUNTIME_SOURCE_ROOTS or runtime_files != RUNTIME_FILES:
+        raise ContractError("runtime identity manifest omits required implementation inputs")
+    root = absolute(path.parent, manifest["runtime_root"])
+    expected = runtime_identity(root, source_roots, runtime_files)
+    if expected != manifest:
+        raise ContractError("runtime identity manifest is stale")
+    return expected
+
+
+def runtime_dependency(base: Path, value: str, label: str) -> dict:
+    path = regular(absolute(base, value), label)
+    if path.name != RUNTIME_IDENTITY_FILE:
+        return {
+            "locator": str(path),
+            "sha256": file_hash(path),
+            "size": path.stat().st_size,
+        }
+    verified = verify_runtime_identity_manifest(path)
+    return {
+        "locator": str(path),
+        "sha256": file_hash(path),
+        "size": path.stat().st_size,
+        "runtime_identity_sha256": verified["runtime_identity_sha256"],
+        "python_executable_sha256": verified["python"]["executable_sha256"],
+    }
+
+
+def provider_execution_mode(profile: dict, profile_identity: dict) -> str | None:
+    stages = profile.get("automation", {}).get("stages", [])
+    if not any(stage.get("phase") in METIS_PROVIDER_PHASES for stage in stages):
+        return None
+    configured = profile.get("automation", {}).get("provider_execution_mode")
+    sidecar = Path(f"{profile_identity['locator']}.provider-execution.json")
+    sidecar_mode = None
+    if sidecar.exists():
+        record = json.loads(regular(sidecar, "provider execution sidecar").read_text())
+        allowed = {
+            "format_version",
+            "profile_sha256",
+            "provider_execution_mode",
+            "content_sha256",
+        }
+        claimed = record.pop("content_sha256", None)
+        if set(record) != allowed - {"content_sha256"} or claimed != object_hash(record):
+            raise ContractError("provider execution sidecar identity mismatch")
+        if record.get("format_version") != PROVIDER_EXECUTION_MODE_FORMAT:
+            raise ContractError("unsupported provider execution sidecar")
+        if record.get("profile_sha256") != profile_identity["sha256"]:
+            raise ContractError("provider execution sidecar is stale")
+        sidecar_mode = record.get("provider_execution_mode")
+    if configured and sidecar_mode and configured != sidecar_mode:
+        raise ContractError("provider execution modes conflict")
+    mode = configured or sidecar_mode
+    if mode not in PROVIDER_EXECUTION_MODES:
+        raise ContractError("provider execution requires explicit LIVE or FROZEN_REPLAY mode")
+    if mode == "FROZEN_REPLAY" and any(
+        stage.get("credential_env") or stage.get("runtime_dependency_files")
+        for stage in stages
+        if stage.get("phase") in METIS_PROVIDER_PHASES
+    ):
+        raise ContractError("frozen replay declares live provider inputs")
+    return mode
+
+
+def default_runtime_manifest() -> Path:
+    return Path(__file__).resolve().parents[2] / RUNTIME_IDENTITY_FILE
+
+
+def command_executable(base: Path, command: list[str], env: dict[str, str]) -> Path:
+    if not command:
+        raise ContractError("provider-backed stage has no adapter executable")
+    value = command[0]
+    value_path = Path(value)
+    if value_path.is_absolute():
+        found = value_path
+    elif os.path.dirname(value):
+        found = base / value_path
+    else:
+        search = []
+        for entry in env.get("PATH", os.defpath).split(os.pathsep):
+            directory = Path(entry or ".")
+            search.append(str(directory if directory.is_absolute() else base / directory))
+        found = shutil.which(value, path=os.pathsep.join(search))
+    if not found:
+        raise ContractError(f"provider-backed adapter executable is unavailable: {value}")
+    declared = Path(found).absolute()
+    regular(declared.resolve(), "provider-backed adapter executable")
+    return declared
 
 
 def parse_bindings(values: list[str], profile: dict) -> dict:
@@ -454,7 +732,7 @@ def verify_profile(
         connectors = automation.get("connectors", [])
         if {item.get("kind") for item in connectors} != {"TICKET", "JIRA", "INTIGRITI", "CONFLUENCE"} or any(item.get("read_only") is not True for item in connectors):
             raise ContractError("schema-v6 connector contract incomplete")
-        outputs = V67_OUTPUTS if profile.get("schema_version") == "6.7" else (V661_OUTPUTS if profile.get("schema_version") == "6.6.1" else (V66_OUTPUTS if profile.get("schema_version") == "6.6" else (V65_OUTPUTS if profile.get("schema_version") == "6.5" else (V64_OUTPUTS if profile.get("schema_version") == "6.4" else (V63_OUTPUTS if profile.get("schema_version") == "6.3" else (V62_OUTPUTS if profile.get("schema_version") == "6.2" else V6_OUTPUTS))))))
+        outputs = versioned_outputs(profile["schema_version"])
         for stage_id, expected in outputs.items():
             actual = next(
                 (set(item["required_outputs"]) for item in stages if item["stage_id"] == stage_id),
@@ -481,6 +759,7 @@ def verify_profile(
     identity = {"locator": str(path), "sha256": file_hash(path)}
     if contract_release:
         identity["contract_release"] = contract_release
+    provider_execution_mode(profile, identity)
     return profile, identity
 
 
@@ -543,10 +822,50 @@ def stage_inputs(
     adapter_identity = object_hash(command_identity(base, adapter))
     worker_adapter = stage.get("worker_adapter")
     worker_identity = object_hash(command_identity(base, worker_adapter)) if worker_adapter else None
+    runtime_values = list(stage.get("runtime_dependency_files", []))
+    provider_mode = (
+        provider_execution_mode(profile, profile_identity)
+        if stage.get("phase") in METIS_PROVIDER_PHASES
+        else None
+    )
+    provider_runtime = provider_mode == "LIVE"
+    if provider_runtime and not any(
+        absolute(base, value) == default_runtime_manifest()
+        for value in runtime_values
+    ):
+        runtime_values.append(str(default_runtime_manifest()))
     runtime_dependencies = [
-        material_file(base, value, f"stage runtime dependency {value}")
-        for value in stage.get("runtime_dependency_files", [])
+        runtime_dependency(base, value, f"stage runtime dependency {value}")
+        for value in runtime_values
     ]
+    if provider_runtime:
+        manifest_dependencies = [
+            item
+            for item in runtime_dependencies
+            if "runtime_identity_sha256" in item
+        ]
+        if len(manifest_dependencies) != 1:
+            raise ContractError(
+                "provider-backed stage requires one verified Metis runtime identity"
+            )
+        executable = command_executable(base, adapter, runtime_environment([]))
+        if executable != Path(sys.executable).absolute():
+            raise ContractError(
+                "provider-backed adapter uses a different Python environment"
+            )
+        if any(os.environ.get(name) for name in ("PYTHONPATH", "PYTHONHOME", "UV_PYTHON")):
+            raise ContractError("provider-backed adapter has an unsupported import override")
+        virtual_env = os.environ.get("VIRTUAL_ENV")
+        if virtual_env and Path(virtual_env).absolute() != executable.parent.parent:
+            raise ContractError("provider-backed adapter has a conflicting virtual environment")
+        executable_sha256 = file_hash(executable.resolve())
+        if (
+            executable_sha256
+            != manifest_dependencies[0]["python_executable_sha256"]
+        ):
+            raise ContractError(
+                "provider-backed adapter does not use the verified Python runtime"
+            )
     inputs = {
         "format_version": FORMAT,
         "project_id": profile["project"]["project_id"],
@@ -569,6 +888,9 @@ def stage_inputs(
         inputs["worker_adapter_sha256"] = worker_identity
     if runtime_dependencies:
         inputs["runtime_dependency_files"] = runtime_dependencies
+    if provider_runtime:
+        inputs["runtime_adapter_executable"] = str(executable)
+        inputs["runtime_adapter_executable_sha256"] = executable_sha256
     human_evidence = stage.get("human_dependency", {}).get("evidence")
     if human_evidence:
         path = absolute(base, human_evidence)
@@ -624,6 +946,8 @@ def run_command(
         "reader_limit": str(context["reader_limit"]),
     }
     argv = [item.format(**variables) for item in command]
+    if context.get("runtime_adapter_executable"):
+        argv[0] = context["runtime_adapter_executable"]
     env = runtime_environment(credentials)
     env["FIRMWARE_CAMPAIGN_CONTEXT"] = str(context_path)
     env["CAMPAIGN_DATABASE_URI"] = (
@@ -910,6 +1234,11 @@ def execute_stage(
                     f"completed stage output changed: {stage['stage_id']}"
                 )
         return current
+    if (
+        stage.get("phase") in METIS_PROVIDER_PHASES
+        and provider_execution_mode(profile, profile_identity) == "FROZEN_REPLAY"
+    ):
+        raise ContractError("frozen provider replay has no reusable completed receipt")
     if dependency_blocks:
         block = {
             "stage_id": stage["stage_id"],
@@ -1154,6 +1483,7 @@ def execute_stage(
             if profile.get("schema_version") not in {"4", "5"}:
                 verify_staged_candidate(execution_candidate)
             execution_candidate.chmod(0o600)
+            candidate.parent.mkdir(parents=True, exist_ok=True)
             os.replace(execution_candidate, candidate)
             committed = candidate_state(candidate)
             if committed != after:

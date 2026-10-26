@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -408,12 +409,16 @@ def test_metis_cli_runs_restart_safe_campaign_without_engine_configuration(
             "stage_id": phase.lower(),
             "phase": phase,
             "depends_on": [],
-            "adapter": ["python3", "blocked-adapter.py"],
+            "adapter": [sys.executable, "blocked-adapter.py"],
             "required_outputs": ["blocked.json"],
             "credential_env": ["METIS_FIRMWARE_CAMPAIGN_TEST_MISSING"],
         }
         if phase == "PACKET_VALIDATION":
-            stage["worker_adapter"] = ["python3", "blocked-worker.py"]
+            stage["worker_adapter"] = [sys.executable, "blocked-worker.py"]
+        if phase in autonomous_campaign.METIS_PROVIDER_PHASES:
+            stage["runtime_dependency_files"] = [
+                str(autonomous_campaign.default_runtime_manifest())
+            ]
         stages.append(stage)
     profile = tmp_path / "profile.json"
     profile.write_text(
@@ -435,6 +440,7 @@ def test_metis_cli_runs_restart_safe_campaign_without_engine_configuration(
                     "format_version": autonomous_campaign.FORMAT,
                     "campaign_reader_limit": 11,
                     "provider_worker_configuration_limit": 100,
+                        "provider_execution_mode": "LIVE",
                     "stages": stages,
                 },
                 "governance": {

@@ -54,6 +54,19 @@ runtime allowlist and only the credentials declared for that stage. Readers use
 isolated read-only candidate copies; writers use private staged copies which are
 verified before atomic promotion.
 
+Provider-backed profiles also bind the exact Metis implementation before a
+completed stage can be reused. `runtime-identity-v1.json` covers the executable
+Python version, direct and installed lock-resolved dependency versions,
+`pyproject.toml`, `uv.lock`, and all
+runtime files under `src/metis` and `src/metis_firmware_campaign`. The
+coordinator recomputes that identity before checking a receipt. Changed runtime
+content invalidates the provider stage and its descendants; a stale manifest
+fails closed. New profiles declare `automation.provider_execution_mode=LIVE`,
+including credential-free local providers. Legacy profiles may use a
+`PROFILE.provider-execution.json` sidecar bound to their exact profile hash.
+`FROZEN_REPLAY` retains historical receipt identity but cannot execute a
+missing or invalidated provider stage.
+
 Provider-backed stages automatically redirect the existing per-result review
 checkpoint to a durable path beneath their content-addressed stage identity.
 Each SQLite commit completes before a later callback or request can run, and
@@ -84,3 +97,15 @@ auxiliary subjects, all campaign subjects, and unique roots separately
 reconciled.
 
 Default Metis behavior is unchanged when `--firmware-campaign` is absent.
+
+## Triage-only before/after benchmark
+
+`python -m metis_firmware_campaign.triage_benchmark` compares result files from
+separately authorized baseline and candidate triage runs. The case manifest must
+bind each SARIF record and exact source identity to an evidence-backed expected
+triage status. The harness itself never invokes a provider and rejects any input
+that claims provider authorization.
+
+This comparison measures triage quality only. It does not measure discovery
+recall, code-graph coverage, reproducer quality, or whole-pipeline superiority.
+Running either provider-backed side requires separate approval.

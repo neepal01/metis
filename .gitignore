@@ -13,7 +13,6 @@ dist/
 .coverage
 .devcontainer/devcontainer-lock.json
 .python-version
-uv.lock
 results/
 /metis-runlog/
 /local-tests/
