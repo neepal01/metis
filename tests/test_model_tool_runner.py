@@ -3,13 +3,18 @@
 
 import json
 import logging
+from concurrent.futures import CancelledError
+from unittest.mock import Mock
 
 import pytest
 from langchain_core.messages import AIMessage
 from langchain_core.prompts import ChatPromptTemplate
 
 from metis.engine.model_tool_runner import ModelInputLimitError
+from metis.engine.model_tool_runner import ModelOutputLimitError
+from metis.engine.model_tool_runner import ModelResponseIncompleteError
 from metis.engine.model_tool_runner import ModelToolConfigurationError
+from metis.engine.model_tool_runner import ModelToolResultError
 from metis.engine.model_tool_runner import invoke_model_with_tools
 from metis.engine.model_tool_runner import model_messages_token_count
 from metis.engine.model_tool_runner import model_tool_system_prompt
@@ -77,7 +82,8 @@ def _prompt():
     )
 
 
-def test_model_tool_system_prompt_includes_and_clips_tool_contracts():
+@pytest.mark.parametrize("limit", (6, float("inf")))
+def test_model_tool_system_prompt_includes_and_clips_tool_contracts(limit):
     first = _FakeTool()
     second = _FakeTool()
     second.name = "lookup"
@@ -85,7 +91,7 @@ def test_model_tool_system_prompt_includes_and_clips_tool_contracts():
     long_contract_tool.name = "read"
     long_contract_tool.metadata = {
         "metis_contract": "0123456789abcdef",
-        "metis_contract_max_chars": 6,
+        "metis_contract_max_chars": limit,
     }
     prompt = model_tool_system_prompt(
         "Return JSON.", (first, second, long_contract_tool)
@@ -97,7 +103,8 @@ def test_model_tool_system_prompt_includes_and_clips_tool_contracts():
     assert "MODEL TOOL CONTRACTS" in prompt
     assert prompt.count(first.metadata["metis_contract"]) == 1
     assert "[index_search, lookup]" in prompt
-    assert "[read]\n012345\n[contract truncated]" in prompt
+    expected = "012345\n[contract truncated]" if limit == 6 else "0123456789abcdef"
+    assert f"[read]\n{expected}" in prompt
 
 
 @pytest.mark.parametrize("max_tool_rounds", [1, 2])
@@ -106,6 +113,7 @@ def test_invoke_model_with_tools_executes_tool_calls_and_logs_debug(
 ):
     tool = _FakeTool()
     chat = _FakeChat()
+    observer = Mock()
     caplog.set_level(logging.DEBUG, logger="metis")
 
     result, evidence = invoke_model_with_tools(
@@ -114,6 +122,7 @@ def test_invoke_model_with_tools_executes_tool_calls_and_logs_debug(
         {"body": "review this"},
         (tool,),
         max_tool_rounds=max_tool_rounds,
+        on_tool_result=observer,
     )
 
     assert result == '{"reviews": []}'
@@ -127,6 +136,9 @@ def test_invoke_model_with_tools_executes_tool_calls_and_logs_debug(
     )
     assert chat.bound_tools == [tool]
     assert tool.calls == [{"query": "allocator ownership"}]
+    observer.assert_called_once_with(
+        "index_search", {"query": "allocator ownership"}, "indexed context"
+    )
     messages = [record.getMessage() for record in caplog.records]
     assert any(
         "Invoking model tool index_search with args={'query': 'allocator ownership'}"
@@ -137,6 +149,155 @@ def test_invoke_model_with_tools_executes_tool_calls_and_logs_debug(
         "Model tool index_search completed with 15 output chars" in message
         for message in messages
     )
+
+
+def test_failed_tool_output_is_not_observed(monkeypatch):
+    tool = _FakeTool()
+    chat = _FakeChat()
+    observer = Mock()
+    error_observer = Mock()
+    monkeypatch.setattr(tool, "invoke", Mock(side_effect=ValueError("read failed")))
+
+    result, evidence = invoke_model_with_tools(
+        chat,
+        _prompt(),
+        {"body": "review this"},
+        (tool,),
+        max_tool_rounds=1,
+        on_tool_result=observer,
+        on_tool_error=error_observer,
+    )
+
+    assert result == '{"reviews": []}'
+    assert "Status: error" in evidence[0]
+    assert chat.messages[-1][-1].status == "error"
+    observer.assert_not_called()
+    error_observer.assert_called_once_with()
+
+
+@pytest.mark.parametrize("error", [ValueError("observer failed"), CancelledError()])
+def test_failed_tool_observer_error_aborts_before_followup(monkeypatch, error):
+    tool = _FakeTool()
+    chat = _FakeChat()
+    observer = Mock(side_effect=error)
+    monkeypatch.setattr(tool, "invoke", Mock(side_effect=ValueError("read failed")))
+    expected = (
+        CancelledError if isinstance(error, CancelledError) else ModelToolResultError
+    )
+
+    with pytest.raises(expected) as raised:
+        invoke_model_with_tools(
+            chat,
+            _prompt(),
+            {"body": "review this"},
+            (tool,),
+            max_tool_rounds=1,
+            on_tool_error=observer,
+        )
+
+    assert raised.value is error or raised.value.__cause__ is error
+    observer.assert_called_once_with()
+    assert chat.messages == []
+
+
+@pytest.mark.parametrize("error", [RuntimeError("provider failed"), CancelledError()])
+def test_failed_tool_loop_discards_observations(monkeypatch, error):
+    tool = _FakeTool()
+    chat = _FakeChat()
+    observer = Mock()
+    invoke = chat.bound_chat.invoke
+
+    def respond(messages):
+        if chat.bound_chat.messages:
+            raise error
+        return invoke(messages)
+
+    monkeypatch.setattr(chat.bound_chat, "invoke", respond)
+
+    with pytest.raises(type(error)):
+        invoke_model_with_tools(
+            chat,
+            _prompt(),
+            {"body": "review this"},
+            (tool,),
+            max_tool_rounds=2,
+            on_tool_result=observer,
+        )
+
+    assert tool.calls == [{"query": "allocator ownership"}]
+    observer.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("metadata", "error_type"),
+    [
+        ({"finish_reason": "length"}, ModelOutputLimitError),
+        (
+            {
+                "status": "incomplete",
+                "incomplete_details": {"reason": "content_filter"},
+            },
+            ModelResponseIncompleteError,
+        ),
+        ({"status": "failed"}, ModelResponseIncompleteError),
+    ],
+)
+@pytest.mark.parametrize(
+    ("max_tool_rounds", "collect_evidence"),
+    [(1, False), (2, True), (1, True)],
+    ids=["truncated-tool-call", "truncated-followup", "truncated-forced-final"],
+)
+def test_output_limit_stops_tools_and_preserves_completed_evidence(
+    max_tool_rounds, collect_evidence, metadata, error_type
+):
+    tool = _FakeTool()
+    observer = Mock()
+    tool_request = AIMessage(
+        content="",
+        tool_calls=[
+            {
+                "id": "call-1",
+                "name": tool.name,
+                "args": {"query": "allocator ownership"},
+            }
+        ],
+    )
+    limited_response = AIMessage(
+        content='{"reviews": []}',
+        response_metadata=metadata,
+        tool_calls=[] if collect_evidence else tool_request.tool_calls,
+    )
+    responses = iter(
+        [tool_request, limited_response] if collect_evidence else [limited_response]
+    )
+
+    class Chat:
+        def bind_tools(self, _tools):
+            return self
+
+        def invoke(self, _messages):
+            return next(responses)
+
+    with pytest.raises(error_type) as raised:
+        invoke_model_with_tools(
+            Chat(),
+            _prompt(),
+            {"body": "review this"},
+            (tool,),
+            max_tool_rounds=max_tool_rounds,
+            on_tool_result=observer,
+        )
+
+    if collect_evidence:
+        assert tool.calls == [{"query": "allocator ownership"}]
+        assert "indexed context" in raised.value.tool_evidence[0]
+        observer.assert_called_once_with(
+            "index_search", {"query": "allocator ownership"}, "indexed context"
+        )
+    else:
+        assert tool.calls == []
+        assert raised.value.tool_evidence == ()
+        observer.assert_not_called()
 
 
 def test_require_max_tool_rounds_rejects_missing_value():
@@ -151,6 +312,7 @@ def test_require_max_tool_rounds_rejects_missing_value():
 def test_input_limit_stops_oversized_tool_conversation(max_tool_rounds):
     tool = _FakeTool()
     chat = _FakeChat()
+    observer = Mock()
 
     with pytest.raises(
         ModelInputLimitError, match="Model input exceeds max_input_tokens=64"
@@ -163,11 +325,13 @@ def test_input_limit_stops_oversized_tool_conversation(max_tool_rounds):
             max_tool_rounds=max_tool_rounds,
             token_counter=len,
             max_input_tokens=64,
+            on_tool_result=observer,
         )
 
     assert len(tool.calls) == 1
     assert len(chat.bound_chat.messages) == 1
     assert chat.messages == []
+    observer.assert_not_called()
 
 
 @pytest.mark.parametrize(

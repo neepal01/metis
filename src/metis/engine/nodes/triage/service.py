@@ -6,12 +6,17 @@ from __future__ import annotations
 import logging
 import threading
 from collections.abc import Callable
+from collections.abc import Mapping
+from collections.abc import Sequence
+from concurrent.futures import CancelledError
 from typing import TYPE_CHECKING
 from typing import Any
 
 from metis.chat_model_options import merge_chat_model_kwargs
 from metis.engine.codegraph import CodeGraph
-from metis.engine.nodes.reachability.graph_utils import function_for_location
+from metis.engine.codegraph import FunctionNode
+from metis.engine.codegraph.queries import _build_reverse_edges
+from metis.engine.codegraph.queries import function_for_location
 from metis.engine.stages.triage.models import TriageRequest
 from metis.engine.tools.campaign_evidence import campaign_evidence_model_tools
 from metis.engine.tools.navigation import navigation_model_tools
@@ -42,6 +47,7 @@ class TriageClassifierService:
         model_tool_max_contract_chars: int,
         navigation_manifest: CapabilityManifest,
         campaign_evidence_manifest: CapabilityManifest,
+        max_input_tokens: int | None = None,
     ) -> None:
         self._llm_provider = llm_provider
         self._model = model
@@ -54,6 +60,7 @@ class TriageClassifierService:
         self._model_tool_max_contract_chars = model_tool_max_contract_chars
         self._navigation_manifest = navigation_manifest
         self._campaign_evidence_manifest = campaign_evidence_manifest
+        self._max_input_tokens = max_input_tokens
         self._local = threading.local()
 
     def classify(
@@ -68,6 +75,8 @@ class TriageClassifierService:
         unavailable_files: tuple[str, ...] = (),
         model: str | None = None,
         model_tool_max_rounds: int | None = None,
+        codegraph_file_nodes: Mapping[str, Sequence[FunctionNode]] | None = None,
+        codegraph_callers: Mapping[str, Sequence[str]] | None = None,
     ) -> dict | None:
         normalized_path = self._normalize_path(finding.file_path)
         unavailable = {self._normalize_path(path) for path in unavailable_files}
@@ -87,7 +96,13 @@ class TriageClassifierService:
             "threat_model_context": threat_model_context,
         }
         if codegraph is not None and normalized_path not in unavailable:
-            context = _codegraph_context(codegraph, normalized_path, finding.line)
+            context = _codegraph_context(
+                codegraph,
+                normalized_path,
+                finding.line,
+                file_nodes=codegraph_file_nodes,
+                callers_by_node=codegraph_callers,
+            )
             if context:
                 request["codegraph_context"] = context
         workflow = (
@@ -150,6 +165,7 @@ class TriageClassifierService:
                 ),
                 model_tools=model_tools,
                 model_tool_max_rounds=(model_tool_max_rounds if model_tools else None),
+                max_input_tokens=self._max_input_tokens,
             )
             self._local.workflow = workflow
             self._local.workflow_key = workflow_key
@@ -161,6 +177,8 @@ class TriageClassifierService:
             return ""
         try:
             prompts = plugin.get_prompts()
+        except CancelledError:
+            raise
         except Exception as exc:
             logger.warning("Failed to load triage language guidance: %s", exc)
             return ""
@@ -169,14 +187,28 @@ class TriageClassifierService:
         return str(prompts.get("triage_navigation") or "").strip()
 
 
-def _codegraph_context(graph: CodeGraph, file_path: str, line: int) -> str:
-    target = function_for_location(graph, file_path, line)
+def _codegraph_context(
+    graph: CodeGraph,
+    file_path: str,
+    line: int,
+    *,
+    file_nodes: Mapping[str, Sequence[FunctionNode]] | None = None,
+    callers_by_node: Mapping[str, Sequence[str]] | None = None,
+) -> str:
+    target = function_for_location(
+        graph,
+        file_path,
+        line,
+        nodes=file_nodes.get(file_path, ()) if file_nodes is not None else None,
+    )
     if target is None:
         return ""
-    callers = sorted(
-        node.unique_name
-        for node in graph.nodes.values()
-        if target.unique_name in node.resolved_calls
+    callers = (
+        tuple(
+            dict.fromkeys(_build_reverse_edges(graph, str).get(target.unique_name, ()))
+        )
+        if callers_by_node is None
+        else callers_by_node.get(target.unique_name, ())
     )
     callees = sorted(target.resolved_calls)
     unresolved = sorted(graph.unresolved_calls_for(target))

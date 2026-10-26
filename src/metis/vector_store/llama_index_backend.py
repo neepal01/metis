@@ -1,10 +1,13 @@
 # SPDX-FileCopyrightText: Copyright 2026 Arm Limited and/or its affiliates <open-source-office@arm.com>
 # SPDX-License-Identifier: Apache-2.0
 
+from concurrent.futures import CancelledError
+
 from llama_index.core import VectorStoreIndex
 
 from metis.exceptions import RetrieverInitError
 from metis.vector_store.base import BaseVectorStore
+from metis.vector_store.node_projection import project_index_nodes
 from metis.vector_store.retrievers import LlamaIndexNodeRetriever
 from metis.vector_store.retrievers import QueryAnswerRetriever
 from metis.vector_store.retrievers import query_chat_model_kwargs
@@ -36,6 +39,8 @@ class LlamaIndexVectorBackend(BaseVectorStore):
                 )
                 for index in indexes
             )
+        except CancelledError:
+            raise
         except Exception as exc:
             raise RetrieverInitError() from exc
 
@@ -48,6 +53,9 @@ class LlamaIndexVectorBackend(BaseVectorStore):
         embed_model_docs,
         **embed_model_kwargs,
     ):
+        # Validate both collections before either makes embedding requests.
+        nodes_code = project_index_nodes(nodes_code)
+        nodes_docs = project_index_nodes(nodes_docs)
         for nodes, storage_context, embed_model in zip(
             (nodes_code, nodes_docs),
             self.get_storage_contexts(),

@@ -5,6 +5,7 @@ import json
 import logging
 from collections.abc import Callable
 from collections.abc import Sequence
+from concurrent.futures import CancelledError
 from typing import Any
 
 from langchain_core.messages import ToolMessage
@@ -12,6 +13,8 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai.chat_models.base import BaseChatOpenAI
 
 from metis import runlog
+from metis.engine.concurrency import _cancellation_checkpoint
+from metis.utils import safe_int
 
 logger = logging.getLogger("metis")
 
@@ -20,8 +23,89 @@ class ModelToolConfigurationError(ValueError):
     """Raised when model tools are enabled without required runtime support."""
 
 
+class ModelToolResultError(RuntimeError):
+    """Raised when retained tool results cannot be observed before parsing."""
+
+
 class ModelInputLimitError(ValueError):
     """Raised when the rendered conversation exceeds its input budget."""
+
+
+class ModelResponseIncompleteError(RuntimeError):
+    def __init__(
+        self,
+        message: str,
+        *,
+        tool_evidence: tuple[str, ...] = (),
+    ) -> None:
+        super().__init__(message)
+        self.tool_evidence = tool_evidence
+
+
+class ModelOutputLimitError(ModelResponseIncompleteError):
+    pass
+
+
+def require_completed_model_response(
+    response: object, *, tool_evidence: tuple[str, ...] = ()
+) -> None:
+    if _response_reached_output_limit(response):
+        raise ModelOutputLimitError(
+            "model response reached its output token limit",
+            tool_evidence=tool_evidence,
+        )
+    if getattr(response, "invalid_tool_calls", None):
+        raise ModelResponseIncompleteError(
+            "model response contained invalid tool calls",
+            tool_evidence=tool_evidence,
+        )
+    for attribute in ("response_metadata", "additional_kwargs"):
+        metadata = getattr(response, attribute, None)
+        if not isinstance(metadata, dict):
+            continue
+        status = str(metadata.get("status", "")).strip().lower()
+        if status in {"incomplete", "failed", "cancelled", "queued", "in_progress"}:
+            raise ModelResponseIncompleteError(
+                f"model response did not complete: {status}",
+                tool_evidence=tool_evidence,
+            )
+        if metadata.get("refusal") or any(
+            str(metadata.get(key, "")).strip().lower() == "content_filter"
+            for key in ("finish_reason", "stop_reason", "stopReason")
+        ):
+            raise ModelResponseIncompleteError(
+                "model response was refused or filtered", tool_evidence=tool_evidence
+            )
+    content = getattr(response, "content", None)
+    if isinstance(content, list) and any(
+        isinstance(block, dict) and block.get("type") == "refusal" for block in content
+    ):
+        raise ModelResponseIncompleteError(
+            "model response was refused", tool_evidence=tool_evidence
+        )
+
+
+def _response_reached_output_limit(response: object) -> bool:
+    for attribute in ("response_metadata", "additional_kwargs"):
+        metadata = getattr(response, attribute, None)
+        if not isinstance(metadata, dict):
+            continue
+        incomplete_details = metadata.get("incomplete_details")
+        if (
+            str(metadata.get("status", "")).strip().lower() == "incomplete"
+            and isinstance(incomplete_details, dict)
+            and str(incomplete_details.get("reason", "")).strip().lower()
+            == "max_output_tokens"
+        ):
+            return True
+        for key in ("finish_reason", "stop_reason", "stopReason"):
+            value = metadata.get(key)
+            if isinstance(value, str) and value.strip().lower() in {
+                "length",
+                "max_tokens",
+            }:
+                return True
+    return False
 
 
 def require_max_tool_rounds(value: int | None) -> int:
@@ -94,7 +178,10 @@ def invoke_model_with_tools(
     max_tool_rounds: int,
     token_counter: Callable[[str], int] | None = None,
     max_input_tokens: int | None = None,
+    on_tool_result: Callable[[str, dict[str, Any], str], None] | None = None,
+    on_tool_error: Callable[[], None] | None = None,
 ) -> tuple[str, tuple[str, ...]]:
+    _cancellation_checkpoint()
     with runlog.span(
         "model_loop",
         "tool_loop",
@@ -113,10 +200,13 @@ def invoke_model_with_tools(
         tool_by_name = {getattr(tool, "name", ""): tool for tool in tools}
         messages = prompt.invoke(variables).to_messages()
         evidence: list[str] = []
+        observations: list[tuple[str, dict[str, Any], str]] = []
         last_response = None
         for round_index in range(1, max_tool_rounds + 1):
             require_model_input_budget(messages, token_counter, max_input_tokens)
+            _cancellation_checkpoint()
             last_response = tool_chat.invoke(messages)
+            _cancellation_checkpoint()
             tool_calls = list(getattr(last_response, "tool_calls", None) or [])
             loop_span.event(
                 "model.round",
@@ -126,9 +216,18 @@ def invoke_model_with_tools(
                     "tool_calls": tool_calls,
                 },
             )
+            try:
+                require_completed_model_response(
+                    last_response, tool_evidence=tuple(evidence)
+                )
+            except ModelResponseIncompleteError:
+                _observe_tool_results(observations, on_tool_result)
+                raise
             if not tool_calls:
                 content = _message_content_text(last_response)
                 loop_span.end(attributes={"response": content, "rounds": round_index})
+                _cancellation_checkpoint()
+                _observe_tool_results(observations, on_tool_result)
                 return content, tuple(evidence)
             messages.append(last_response)
             for index, tool_call in enumerate(tool_calls):
@@ -153,7 +252,9 @@ def invoke_model_with_tools(
                                 name,
                                 _debug_tool_args(args),
                             )
+                        _cancellation_checkpoint()
                         content = tool.invoke(args)
+                        _cancellation_checkpoint()
                         if logger.isEnabledFor(logging.DEBUG):
                             logger.debug(
                                 "Model tool %s completed with %d output chars",
@@ -166,7 +267,10 @@ def invoke_model_with_tools(
                                 "output_bytes": len(str(content).encode("utf-8")),
                             }
                         )
+                    except CancelledError:
+                        raise
                     except Exception as exc:
+                        _cancellation_checkpoint()
                         status = "error"
                         content = f"Tool {name!r} failed: {exc}"
                         logger.debug("Model tool %s failed: %s", name, exc)
@@ -175,6 +279,18 @@ def invoke_model_with_tools(
                             attributes={"output": content},
                             exc=exc,
                         )
+                if status == "error" and on_tool_error is not None:
+                    try:
+                        on_tool_error()
+                    except CancelledError:
+                        raise
+                    except Exception as exc:
+                        raise ModelToolResultError(
+                            f"Could not observe failure of tool {name!r}"
+                        ) from exc
+                content = str(content)
+                if status == "success" and on_tool_result is not None:
+                    observations.append((name, args, content))
                 evidence.append(
                     f"Tool: {name}\n"
                     f"Arguments: {json.dumps(args, sort_keys=True, default=str)}\n"
@@ -184,20 +300,21 @@ def invoke_model_with_tools(
                 runlog.bump("tool_calls")
                 messages.append(
                     ToolMessage(
-                        content=str(content),
+                        content=content,
                         name=name,
                         tool_call_id=tool_call_id,
                         status=status,
                     )
                 )
         require_model_input_budget(messages, token_counter, max_input_tokens)
+        _cancellation_checkpoint()
         # Preserve the cached prefix without permitting another tool round.
         last_response = (
             tool_chat.invoke(messages, tool_choice="none")
             if isinstance(chat, BaseChatOpenAI)
             else chat.invoke(messages)
         )
-        content = _message_content_text(last_response)
+        _cancellation_checkpoint()
         loop_span.event(
             "model.round",
             {
@@ -207,9 +324,36 @@ def invoke_model_with_tools(
                 "final": True,
             },
         )
+        try:
+            require_completed_model_response(
+                last_response, tool_evidence=tuple(evidence)
+            )
+        except ModelResponseIncompleteError:
+            _observe_tool_results(observations, on_tool_result)
+            raise
+        content = _message_content_text(last_response)
         loop_span.end(attributes={"response": content, "rounds": max_tool_rounds + 1})
+        _cancellation_checkpoint()
+        _observe_tool_results(observations, on_tool_result)
         return content, tuple(evidence)
     raise AssertionError("model tool loop exited without a response")
+
+
+def _observe_tool_results(
+    observations: list[tuple[str, dict[str, Any], str]],
+    callback: Callable[[str, dict[str, Any], str], None] | None,
+) -> None:
+    if callback is None:
+        return
+    for name, args, content in observations:
+        try:
+            callback(name, args, content)
+        except CancelledError:
+            raise
+        except Exception as exc:
+            raise ModelToolResultError(
+                f"Could not observe result of tool {name!r}"
+            ) from exc
 
 
 def model_messages_token_count(
@@ -272,20 +416,10 @@ def _tool_contract_sections(tools: tuple[Any, ...]) -> list[str]:
 
 def _clip_tool_contract(contract: str, max_chars: Any) -> str:
     text = contract.strip()
-    limit = _positive_int(max_chars)
-    if limit is None or len(text) <= limit:
+    limit = safe_int(max_chars, 0)
+    if limit <= 0 or len(text) <= limit:
         return text
     return text[:limit].rstrip() + "\n[contract truncated]"
-
-
-def _positive_int(value: Any) -> int | None:
-    try:
-        parsed = int(value)
-    except (TypeError, ValueError):
-        return None
-    if parsed <= 0:
-        return None
-    return parsed
 
 
 def _debug_tool_args(args: Any) -> Any:

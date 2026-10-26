@@ -32,10 +32,11 @@ metis_engine:
 
 query:
   max_tokens: 5000
-  temperature: 0.0
 ```
 
 - `model` must be a Claude model ID accepted by the Anthropic API.
+- Temperature is omitted by default. For models that support it, set
+  `llm_provider.supports_temperature: true` and `query.temperature`.
 - The Anthropic API key is resolved from `llm_provider.api_key`, then
   `llm_provider.api_key_env`, then `ANTHROPIC_API_KEY`.
 - Embeddings can be supplied via a separate `embedding_provider` block (any
@@ -52,5 +53,5 @@ query:
 Run Metis normally after the service credentials are available:
 
 ```bash
-uv run metis --codebase-path <path>
+uv run metis --config metis.yaml --codebase-path <path>
 ```

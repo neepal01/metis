@@ -368,10 +368,15 @@ class CodeGraph:
             if not name:
                 continue
             existing = self.public_declarations.setdefault(name, [])
+            seen = None
+            if type(locations) is list and len(locations) > 1:
+                seen = set(existing)
             for location in locations or []:
                 location = str(location or "").strip()
-                if location and location not in existing:
+                if location and location not in (existing if seen is None else seen):
                     existing.append(location)
+                    if seen is not None:
+                        seen.add(location)
 
     def resolve_all_calls(self) -> None:
         for node in self.nodes.values():
@@ -444,8 +449,8 @@ class CodeGraph:
         return [n for n in self.nodes.values() if n.file_path == file_path]
 
     def merge(self, other: "CodeGraph") -> None:
-        duplicate_nodes = set(self.nodes) & set(other.nodes)
-        duplicate_globals = set(self.globals) & set(other.globals)
+        duplicate_nodes = self.nodes.keys() & other.nodes.keys()
+        duplicate_globals = self.globals.keys() & other.globals.keys()
         if duplicate_nodes:
             duplicate = min(duplicate_nodes)
             raise ValueError(f"Duplicate code graph node ID: {duplicate!r}")

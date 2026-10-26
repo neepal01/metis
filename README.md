@@ -123,7 +123,8 @@ export OPENAI_API_KEY="your-key-here"
 
 **Other providers**
 
-Set `llm_provider.name` in `metis.yaml` and install the matching extra:
+Set `llm_provider.name` in a trusted configuration file, select it with
+`--config PATH`, and install the matching extra:
 
 | Provider                 | `name`           | Install                              | Guide                                       |
 |--------------------------|------------------|--------------------------------------|---------------------------------------------|
@@ -208,11 +209,23 @@ docker run --rm -it -v "$PWD:/metis" metis --codebase-path /metis --verbose --ou
 
 **Metis Configuration (`metis.yaml`)**
 
-Metis ships with `src/metis/metis.yaml`. A project may provide `metis.yaml` in
-the working directory or select another file with `--config PATH`. A selected
-document does not inherit packaged `llm_provider`, `embedding_provider`, or
-`query` sections; `llm_provider` is required and the others have runtime
-fallbacks. Shared `metis_engine` settings inherit packaged defaults when omitted.
+Without `--config`, Metis uses its packaged `src/metis/metis.yaml` defaults.
+It does not discover `metis.yaml` or `metis.yml` in the working directory or
+target repository. Select a custom configuration explicitly:
+
+```bash
+uv run metis --config /path/to/trusted/metis.yaml --codebase-path /path/to/src
+```
+
+Relative config paths resolve from the working directory. A missing or invalid
+explicit config is an error, not a request to fall back to packaged defaults.
+Only select configuration you trust: it controls provider endpoints and
+credential environment-variable selection.
+
+A selected document does not inherit packaged `llm_provider`,
+`embedding_provider`, or `query` sections; `llm_provider` is required and the
+others have runtime fallbacks. Shared `metis_engine` settings inherit packaged
+defaults when omitted.
 Non-empty `model_tools`, `capabilities`, and `threat_model` mappings merge
 recursively; lists and scalars replace. Empty mappings replace at that level,
 although downstream validation may restore semantic defaults. An empty
@@ -228,7 +241,8 @@ Configuration covers:
 - **Embedding provider:** models and connection settings used by Index
 - **Engine behavior:** max workers and max token length
 - **Query behavior:** model overrides, token limit, temperature, and similarity top-k
-- **Review checkpoints:** project-local resume storage, enabled by default
+- **Review checkpoints:** project-local resume storage, enabled by default;
+  see [checkpoints and resume](docs/execution-graph.md#review-checkpoints-and-resume).
 - **Database connection:** PostgreSQL host, port, credentials, and database name
 - **Index storage:** selected by CLI options such as `--backend`, `--chroma-dir`,
   `--qdrant-url`, and `--project-schema`
@@ -236,7 +250,7 @@ Configuration covers:
 - **Reachability:** maximum reported path length and optional domain profiles
   and hints.
 
-Project configuration is optional when the packaged defaults are suitable.
+An explicit configuration is optional when the packaged defaults are suitable.
 
 **Language Configuration**
 
@@ -252,6 +266,8 @@ Metis also provides an interactive CLI with several built-in commands:
 
 ### Global CLI Flags
 
+- `--config PATH` – load a trusted configuration file instead of packaged defaults.
+  Repository-local configuration files are not discovered automatically.
 - `--custom-prompt PATH` – optional `.md` or `.txt` file containing additional
   security-review guidance. If omitted, Metis uses `.metis.md` from the project
   root when that file exists.
@@ -277,40 +293,34 @@ for local trace capture, and
 services and model-tool adapters.
 
 ### `init`
-Initializes Metis repository context. When repository memory is enabled, this
-loads threat-model memory first: configured
-`metis_engine.threat_model.source_patterns` are stored as authoritative project
-data. The packaged configuration includes common `SECURITY.*` and threat-model
-filename patterns.
-Metis distills those files into repository memory with the configured LLM. The
-packaged execution graph does not build the vector index. Add the `index` node
-to `initialize`, or run the `index` command, when retrieval is needed. Optional
-git-history memory can add advisory security-review lessons; it never defines
-binding project scope.
-
-Use `--config PATH` to select a configuration with a different threat-model
-source set.
+Initializes the configured repository context. Configured threat-model files
+supply authoritative policy; Git-history lessons are optional and advisory.
+No threat model is generated from source code when those files are absent.
+See [repository memory](docs/repository-memory.md#configuration) for settings.
+The packaged graph does not build the vector index; add the `index` node to
+`initialize`, or run `index`, when retrieval is needed.
 
 ### `index`
 Builds the vector index used by `ask`, `update`, and nodes that use the Index
 capability.
 
 ### `review_code`
-Runs the configured Review stage over the codebase. The packaged graph uses the
-simple LLM and CodeGraph Reachability nodes, then combines and deduplicates
-their findings. Reachability reviews supported C and C++ functions; the simple
-LLM review covers every file in the selected scope.
+Runs the configured Review stage over the selected codebase scope. The default
+graph uses simple LLM review and deduplication, with CodeGraph context for Triage.
+Add `reachability` for CodeGraph-based review of supported C and C++ functions.
 
 ### `review_dir`
-Runs the configured Review stage and limits findings to the selected directory.
+Reviews an existing directory within `--codebase-path`; relative targets resolve
+from that root. Empty directories are valid.
 
 ### `review_file <path>`
-Runs the configured Review stage and limits findings to the selected file.
+Reviews one file, resolving relative targets from `--codebase-path`.
+Missing or unreadable files fail the review.
 
 ### `review_patch <patch.diff>`
-Runs the configured Review stage for a diff. Patch analysis requires a graph
-that selects `simple_llm_review`; the packaged Reachability node reports patch
-requests as inconclusive.
+Patch review requires `simple_llm_review` (enabled by default); Reachability
+reports patch requests as inconclusive. Invalid patches, unreadable source, and
+model failures fail the review.
 
 ### `update <patch.diff>`
 Incrementally updates the index using a diff. Avoids full reindexing.
@@ -319,9 +329,10 @@ Incrementally updates the index using a diff. Avoids full reindexing.
 Ask questions against the indexed codebase.
 
 ### `triage <findings.sarif>`
-Triages findings in a SARIF file and annotates each result with Metis triage metadata.
-You can use this command on SARIF generated by Metis or by other security/static-analysis tools.
-See [docs/triage-flow.md](docs/triage-flow.md) for a short overview of how triage works.
+Annotates findings from Metis review JSON or SARIF (`.sarif` or `.json`), including
+other tools' SARIF. Completed decisions are skipped unless `--include-triaged` is
+set. `--output-file` selects destinations and formats; without an explicit or
+configured filename, triage updates its input. See [triage](docs/triage-flow.md).
 
 ## Examples
 
@@ -355,7 +366,7 @@ uv run metis \
 For embedding models above pgvector's normal-vector HNSW limit, such as
 3072-dimensional embeddings, Metis automatically enables pgvector `halfvec`
 storage for the PostgreSQL backend so HNSW indexes can still be created. You
-can override this in `metis.yaml`:
+can override this in the configuration file selected with `--config PATH`:
 
 ```yaml
 metis_engine:

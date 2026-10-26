@@ -15,6 +15,7 @@ from metis.engine.execution.contracts import DebugCallback
 from metis.engine.execution.contracts import NodeJobs
 from metis.engine.execution.contracts import ProgressCallback
 from metis.sarif.triage import SarifFinding
+from metis.sarif.triage import TriageDecisionSource
 from metis.memory import MemoryService
 
 from .models import TriageRun
@@ -23,6 +24,11 @@ from .models import TriageRun
 class TriageDecision(TypedDict):
     status: Required[str]
     reason: Required[str]
+    evidence: NotRequired[list[str]]
+    resolution_chain: NotRequired[list[str]]
+    unresolved_hops: NotRequired[list[str]]
+    decision_source: NotRequired[TriageDecisionSource]
+    validation_errors: NotRequired[list[str]]
     evidence_obligations: NotRequired[list[str]]
     evidence_coverage: NotRequired[dict[str, int]]
     missing_evidence: NotRequired[list[str]]

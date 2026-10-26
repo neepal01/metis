@@ -26,6 +26,7 @@ from pydantic import ValidationError
 
 from metis.engine.codegraph import CodeGraph
 from metis.engine.codegraph import FunctionNode
+from metis.engine.codegraph.queries import function_for_location
 from metis.engine.execution.contracts import NodeJobs
 from metis.engine.llm_runner import JsonPromptRequest
 from metis.engine.llm_runner import JsonPromptRunner
@@ -53,7 +54,6 @@ from .domain_hints import format_domain_hints_for_prompt
 from .domain_hints import normalize_domain_hints
 from .finding_adapter import review_item_to_finding
 from .graph_utils import _node_sort_key
-from .graph_utils import function_for_location
 from .options import ReachabilityReviewOptions
 from .progress import ReachabilityProgress as Progress
 from .progress import emit_phase_progress
@@ -856,8 +856,9 @@ class IncrementalGraphReviewer:
             for item in discovery_response.reviews
             if item.confidence > 0.0
         )
+        source_maps: dict[tuple[str, bytes, bytes], SourceMap] = {}
         for item in reviews:
-            anchored = self._review_anchor(packet, item)
+            anchored = self._review_anchor(packet, item, source_maps=source_maps)
             if anchored is None:
                 return None
             node, anchor = anchored
@@ -875,17 +876,28 @@ class IncrementalGraphReviewer:
         self,
         packet: _FrontierPacket,
         item: dict[str, Any],
+        *,
+        source_maps: dict[tuple[str, bytes, bytes], SourceMap] | None = None,
     ) -> tuple[FunctionNode, Any] | None:
         source_view = self._repository.source_view_for_path(packet.file_path)
-        source_map = (
-            SourceMap.for_bytes(
-                packet.file_path,
-                source_view.canonical,
-                anchor_source=source_view.raw,
+        if source_view is None:
+            source_map = SourceMap.for_file(
+                self._config.codebase_path, packet.file_path
             )
-            if source_view is not None
-            else SourceMap.for_file(self._config.codebase_path, packet.file_path)
-        )
+        else:
+            source_key = (packet.file_path, source_view.canonical, source_view.raw)
+            source_map = (
+                source_maps.get(source_key) if source_maps is not None else None
+            )
+            if source_map is None:
+                source_map = SourceMap.for_bytes(
+                    packet.file_path,
+                    source_view.canonical,
+                    anchor_source=source_view.raw,
+                )
+                if source_maps is not None:
+                    source_maps.clear()
+                    source_maps[source_key] = source_map
         if source_map is None or not packet.shown_lines:
             return None
         hint = range(min(packet.shown_lines), max(packet.shown_lines) + 1)
@@ -937,9 +949,10 @@ class IncrementalGraphReviewer:
                 tuple[finding_admission._GroundedNecessaryAlternative, ...],
             ]
         ] = []
+        source_maps: dict[tuple[str, bytes, bytes], SourceMap] = {}
         for review_index, raw_item in enumerate(reviews):
             item = dict(raw_item)
-            resolved = self._review_anchor(packet, item)
+            resolved = self._review_anchor(packet, item, source_maps=source_maps)
             if resolved is None:
                 raise RuntimeError("Validated frontier review lost its source anchor")
             packet_node, anchor = resolved

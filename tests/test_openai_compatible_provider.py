@@ -2,18 +2,26 @@
 # SPDX-License-Identifier: Apache-2.0
 
 import asyncio
+import logging
 from typing import Any, cast
 from unittest.mock import Mock
 
 import pytest
 
 from langchain_core.embeddings import Embeddings
+from langchain_core.messages import AIMessage
 from langchain_core.messages import HumanMessage
+from langchain_core.runnables import RunnableLambda
 from langchain_openai import ChatOpenAI
+
+from metis.engine.llm_runner import JsonPromptRequest
+from metis.engine.llm_runner import JsonPromptRunner
 
 from metis.providers.embedding_adapter import LangChainEmbeddingAdapter
 from metis.providers.llamacpp import LlamaCppEmbeddingProvider
+from metis.providers.llamacpp import LlamaCppProvider
 from metis.providers.ollama import OllamaEmbeddingProvider
+from metis.providers.ollama import OllamaProvider
 from metis.providers.vllm import VLLMProvider, VLLMEmbeddingProvider
 from metis.providers.openai_compatible import OpenAICompatibleChatConfig
 from metis.providers.openai_compatible import OpenAICompatibleChatProvider
@@ -40,6 +48,49 @@ def _embedding_config(**overrides: object) -> OpenAICompatibleEmbeddingConfig:
     return cast(OpenAICompatibleEmbeddingConfig, config)
 
 
+@pytest.mark.parametrize("alias", ["OPENAI_API_BASE", "OPENAI_BASE_URL"])
+def test_chat_cache_identity_tracks_endpoint_inputs(monkeypatch, alias):
+    monkeypatch.delenv("OPENAI_API_BASE", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    provider = OpenAICompatibleChatProvider(_chat_config())
+    default_identity = provider.cache_identity()
+    assert default_identity["base_url"] is None
+    identities = []
+    for port in (18001, 18002):
+        monkeypatch.setenv(alias, f"http://localhost:{port}/v1")
+        model = provider.get_chat_model()
+        try:
+            identity = provider.cache_identity()
+            assert model.root_client.base_url.port == port
+            identities.append(identity)
+        finally:
+            model.root_client.close()
+            asyncio.run(model.root_async_client.close())
+    assert default_identity not in identities
+    assert identities[0] != identities[1]
+
+
+@pytest.mark.parametrize("configured", [False, True])
+def test_chat_cache_identity_preserves_endpoint_precedence(monkeypatch, configured):
+    monkeypatch.setenv("OPENAI_API_BASE", "https://primary.invalid/v1")
+    monkeypatch.setenv("OPENAI_BASE_URL", "https://secondary.invalid/v1")
+    config = _chat_config(
+        **({"base_url": "https://configured.invalid/v1"} if configured else {})
+    )
+    provider = OpenAICompatibleChatProvider(config)
+    model = provider.get_chat_model()
+    try:
+        assert model.root_client.base_url.host == (
+            "configured.invalid" if configured else "primary.invalid"
+        )
+        identity = provider.cache_identity()
+        monkeypatch.setenv("OPENAI_API_BASE", "https://changed.invalid/v1")
+        assert (provider.cache_identity() == identity) is configured
+    finally:
+        model.root_client.close()
+        asyncio.run(model.root_async_client.close())
+
+
 def test_chat_model_forwards_supported_runtime_options() -> None:
     provider = OpenAICompatibleChatProvider(_chat_config())
 
@@ -55,9 +106,18 @@ def test_chat_model_forwards_supported_runtime_options() -> None:
     assert payload["temperature"] == 0.0
 
 
-@pytest.mark.parametrize("model", ["gpt-6-astra", "gpt-6-astra-2026-09-03"])
+@pytest.mark.parametrize(
+    "model",
+    [
+        "gpt-6-astra",
+        "gpt-6-astra-2026-09-03",
+        "gpt-6-sol",
+        "gpt-6-luna",
+        "GPT-6-Sol",
+    ],
+)
 @pytest.mark.parametrize("temperature", [0.0, 0.1, 1.0])
-def test_chat_model_omits_temperature_for_astra(model: str, temperature: float) -> None:
+def test_chat_model_omits_temperature_for_gpt6(model: str, temperature: float) -> None:
     provider = OpenAICompatibleChatProvider(_chat_config(model=model))
 
     llm = provider.get_chat_model(
@@ -72,10 +132,39 @@ def test_chat_model_omits_temperature_for_astra(model: str, temperature: float) 
 
 
 @pytest.mark.parametrize(
+    ("provider_class", "model"),
+    [
+        (OpenAICompatibleChatProvider, "gpt-4.1"),
+        (OpenAICompatibleChatProvider, "gpt-4o-mini"),
+        (OllamaProvider, "local-model"),
+        (LlamaCppProvider, "local-model"),
+        (VLLMProvider, "local-model"),
+    ],
+)
+@pytest.mark.parametrize(
+    "options", [{}, {"temperature": None}, {"temperature": 0.0}, {"temperature": 0.7}]
+)
+def test_chat_model_forwards_optional_temperature(provider_class, model, options):
+    provider = provider_class(
+        _chat_config(model=model, base_url="http://localhost:18001/v1")
+    )
+    llm = provider.get_chat_model(**options)
+    try:
+        payload = llm._get_request_payload([HumanMessage(content="Review this code.")])
+        if options.get("temperature") is None:
+            assert "temperature" not in payload
+        else:
+            assert payload["temperature"] == options["temperature"]
+    finally:
+        llm.root_client.close()
+        asyncio.run(llm.root_async_client.close())
+
+
+@pytest.mark.parametrize(
     ("configured_model", "requested_model", "supports_temperature"),
     [
-        ("gpt-4.1", "gpt-6-astra", False),
-        ("gpt-6-astra", "gpt-4.1", True),
+        ("gpt-4.1", "gpt-6-sol", False),
+        ("gpt-6-luna", "gpt-4.1", True),
     ],
 )
 @pytest.mark.parametrize("positional", [False, True])
@@ -100,6 +189,51 @@ def test_chat_model_temperature_uses_resolved_model(
         assert "temperature" not in payload
 
 
+class _PayloadRecordingProvider(OpenAICompatibleChatProvider):
+    def __init__(self, config: OpenAICompatibleChatConfig) -> None:
+        super().__init__(config)
+        self.payloads: list[dict[str, Any]] = []
+
+    def get_chat_model(self, *args: str, **kwargs: object) -> Any:
+        llm = super().get_chat_model(*args, **kwargs)
+        self.payloads.append(
+            llm._get_request_payload([HumanMessage(content="Review this code.")])
+        )
+        return RunnableLambda(lambda _messages: AIMessage(content="{}"))
+
+
+@pytest.mark.parametrize(
+    ("model", "expect_temperature"),
+    [("gpt-6-sol", False), ("gpt-6-luna", False), ("gpt-4.1", True)],
+)
+def test_prompt_runner_temperature_reaches_request_payload(
+    model: str, expect_temperature: bool
+) -> None:
+    provider = _PayloadRecordingProvider(_chat_config(model=model))
+
+    JsonPromptRunner(provider).invoke(
+        JsonPromptRequest(
+            model=model,
+            system_prompt="system",
+            user_prompt="user",
+            variables={},
+            parse=lambda _raw: None,
+            logger=logging.getLogger("metis.test.gpt6_temperature"),
+            label="Test prompt",
+            batch_size=1,
+            invalid_message="bad payload",
+            final_keep_message="giving up",
+            temperature=0.0,
+            chat_model_kwargs={"temperature": 0.1},
+        )
+    )
+
+    assert provider.payloads
+    for payload in provider.payloads:
+        assert payload["model"] == model
+        assert ("temperature" in payload) is expect_temperature
+
+
 def test_chat_model_applies_configured_max_retries() -> None:
     provider = OpenAICompatibleChatProvider(_chat_config(max_retries=7))
 
@@ -122,6 +256,26 @@ def test_chat_model_default_max_retries() -> None:
     llm = provider.get_chat_model()
 
     assert llm.max_retries == 5
+
+
+@pytest.mark.parametrize(
+    ("options", "expected_timeout"),
+    [
+        ({}, 600.0),
+        ({"timeout": 12.0}, 12.0),
+        ({"request_timeout": 12.0}, 12.0),
+    ],
+)
+def test_chat_model_uses_finite_timeout_with_runtime_override(
+    options: dict[str, float], expected_timeout: float
+) -> None:
+    provider = OpenAICompatibleChatProvider(_chat_config())
+
+    llm = provider.get_chat_model(**options)
+
+    assert llm.request_timeout == expected_timeout
+    assert llm.root_client.timeout == expected_timeout
+    assert llm.root_async_client.timeout == expected_timeout
 
 
 def test_chat_model_uses_custom_base_and_headers() -> None:

@@ -7,12 +7,18 @@ import json
 import logging
 import os
 import sqlite3
+from collections.abc import Callable
 from collections.abc import Mapping
 from contextlib import closing
+from dataclasses import asdict
 from hashlib import sha256
 from pathlib import Path
+from uuid import uuid4
 
+from metis.engine.execution import ExecutionResult
 from metis.engine.stages.review.models import ReviewCheckpointRecord
+from metis.json_io import write_json_atomic
+from metis.utils import resolve_path_within_root
 from metis.version import __version__ as METIS_VERSION
 
 
@@ -74,12 +80,14 @@ def _json_nesting_exceeds_limit(payload: str, limit: int = 512) -> bool:
 
 
 def _sqlite_records(
-    path: Path, *, producer: str | None = None
+    path: Path, *, producer: str | None = None, root: Path | None = None
 ) -> dict[str, dict[str, object]] | None:
-    if not path.exists():
-        return None
     records: dict[str, dict[str, object]] = {}
     try:
+        if root is not None:
+            resolve_path_within_root(root, path)
+        if not path.exists():
+            return None
         with closing(_connect_checkpoint(path)) as connection:
             legacy = _ensure_checkpoint_schema(connection)
             query = """
@@ -102,15 +110,21 @@ def _sqlite_records(
                 if not isinstance(record, dict):
                     continue
                 records[str(key)] = record
-    except (OSError, sqlite3.Error):
+    except (OSError, ValueError, sqlite3.Error):
         return None
     return records or None
 
 
 def _write_sqlite_record(
-    path: Path, record: ReviewCheckpointRecord, *, fail_closed: bool = False
+    path: Path,
+    record: ReviewCheckpointRecord,
+    *,
+    root: Path | None = None,
+    fail_closed: bool = False,
 ) -> None:
     try:
+        if root is not None:
+            resolve_path_within_root(root, path)
         path.parent.mkdir(parents=True, exist_ok=True)
         payload = json.dumps(
             record.record,
@@ -144,7 +158,7 @@ def _write_sqlite_record(
                     (record.metis_version, record.key, payload),
                 )
             connection.commit()
-    except (OSError, sqlite3.Error) as exc:
+    except (OSError, ValueError, sqlite3.Error) as exc:
         if fail_closed:
             raise
         logging.getLogger("metis").error(
@@ -160,18 +174,20 @@ def review_checkpoint_callbacks(
     if not enabled:
         return {}
     campaign_root = os.environ.get("METIS_FIRMWARE_PROVIDER_CHECKPOINT_ROOT")
-    checkpoint_base = (
-        Path(campaign_root).resolve() / "review"
+    root = (
+        Path(campaign_root).resolve()
         if campaign_root
         else Path(codebase_path).expanduser().resolve()
-        / ".metis"
-        / "checkpoints"
-        / "review"
+    )
+    checkpoint_base = (
+        root / "review"
+        if campaign_root
+        else root / ".metis" / "checkpoints" / "review"
     )
 
     def resume(producer: str) -> Mapping[str, Mapping[str, object]] | None:
         return _sqlite_records(
-            _checkpoint_path(checkpoint_base, producer), producer=producer
+            _checkpoint_path(checkpoint_base, producer), producer=producer, root=root
         )
 
     def checkpoint(
@@ -183,6 +199,7 @@ def review_checkpoint_callbacks(
         _write_sqlite_record(
             _checkpoint_path(checkpoint_base, record.producer),
             record,
+            root=root,
             fail_closed=bool(campaign_root),
         )
 
@@ -191,3 +208,53 @@ def review_checkpoint_callbacks(
         "review_resume_callback": resume,
         "review_checkpoint_required": bool(campaign_root),
     }
+
+
+def stage_checkpoint_callback(
+    *, codebase_path: str | Path
+) -> Callable[[ExecutionResult], None]:
+    campaign_root = os.environ.get("METIS_FIRMWARE_PROVIDER_CHECKPOINT_ROOT")
+    root = (
+        Path(campaign_root).resolve()
+        if campaign_root
+        else Path(codebase_path).expanduser().resolve()
+    )
+    path = (
+        root / f"graph.{uuid4().hex}.json"
+        if campaign_root
+        else root / ".metis" / "checkpoints" / f"graph.{uuid4().hex}.json"
+    )
+
+    def checkpoint(result: ExecutionResult) -> None:
+        outputs = {
+            stage: {
+                name: value
+                for name, value in values.items()
+                if name in {"findings", "sarif", "formats", "filename"}
+            }
+            for stage, values in result.outputs.items()
+            if "sarif" in values or "findings" in values
+        }
+        if not outputs:
+            return
+        try:
+            target = resolve_path_within_root(root, str(path))
+            target.parent.mkdir(parents=True, exist_ok=True)
+            write_json_atomic(
+                target,
+                {
+                    "status": result.status.value,
+                    "published_stages": list(result.outputs),
+                    "outputs": outputs,
+                    "diagnostics": [asdict(item) for item in result.diagnostics],
+                },
+                indent=2,
+            )
+        except (OSError, TypeError, ValueError) as exc:
+            if campaign_root:
+                raise
+            logging.getLogger("metis").error(
+                "Unable to save stage checkpoint %s: %s", path, exc
+            )
+
+    return checkpoint

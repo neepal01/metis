@@ -44,13 +44,14 @@ built around a typed execution graph.
 | Built-in node or stage | [Built-in execution components](docs/contributing/adding-execution-component.md) |
 | Separately distributed node or stage | [External nodes and stages](docs/execution-graph.md#adding-external-nodes-and-stages) |
 | Execution YAML, ports, status, scheduling | [Execution graph](docs/execution-graph.md) |
+| Shared CodeGraph queries | `src/metis/engine/codegraph/queries.py` and [CodeGraph contracts](docs/execution-graph.md#codegraph-provider-contract) |
 | Capability | [Capabilities](docs/capabilities/README.md) and [adding a capability](docs/capabilities/adding-capability.md) |
 | Model-tool adapter or loop | `src/metis/engine/tools/`, `src/metis/engine/model_tool_runner.py`, `tests/test_model_tool_runner.py`, and the consuming capability's guide |
 | Language plugin | [Language plugins](docs/language-plugins.md); for CodeGraph support also read the [provider](docs/execution-graph.md#codegraph-provider-contract) and [semantics](docs/execution-graph.md#codegraph-semantics-contract) contracts |
 | Model provider | [Adding a provider](docs/providers/adding-new-provider.md), plus the matching provider guide when present |
 | Shared configuration/defaults | [README configuration](README.md#configuration), `src/metis/configuration.py`, `src/metis/metis.yaml`, and `tests/test_configuration.py` |
 | CLI flag or interactive command | `src/metis/cli/entry.py`, `src/metis/cli/command_registry.py`, `src/metis/cli/commands.py`, [README CLI](README.md#running-metis), `tests/test_cli_entry.py`, `tests/test_cli_commands.py`, and `tests/test_cli_e2e.py` |
-| Export format or SARIF identity | `src/metis/engine/execution/contracts.py`, `src/metis/cli/exporters.py`, `src/metis/cli/utils.py`, `src/metis/cli/entry.py`, `src/metis/json_io.py`, `src/metis/sarif/`, `tests/test_cli_exporters.py`, `tests/test_cli_output_paths.py`, `tests/test_json_io.py`, and `tests/test_sarif.py` |
+| Export format, severity, or SARIF identity | `src/metis/engine/execution/contracts.py`, `src/metis/cli/output.py`, `src/metis/cli/exporters.py`, `src/metis/cli/entry.py`, `src/metis/severity.py`, `src/metis/json_io.py`, `src/metis/sarif/`, `tests/test_cli_exporters.py`, `tests/test_cli_output_paths.py`, `tests/test_json_io.py`, and `tests/test_sarif.py` |
 | Execution facade or entry-point contract | Its extension guide, `tests/test_public_imports.py`, `tests/test_execution_node_api.py`, `tests/test_execution_stage_api.py`, and extension-wheel discovery in `tests/test_execution_e2e.py` |
 | Repository memory | [Repository memory](docs/repository-memory.md) |
 | Vector backend/indexing | [Index capability](docs/capabilities/index.md), [embedding provider](docs/providers/embedding-provider.md), `src/metis/vector_store/`, `src/metis/cli/entry.py`, and `src/metis/cli/utils.py` |

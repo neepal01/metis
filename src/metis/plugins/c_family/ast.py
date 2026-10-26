@@ -27,6 +27,7 @@ from metis.engine.source.tree_sitter_nodes import (
 )
 
 from .runtime import _scan_invocation
+from .runtime import _walk_nodes
 
 ANONYMOUS_NAMESPACE_SCOPE = "(anonymous namespace)"
 _UNEVALUATED_EXPRESSION_KINDS = frozenset(
@@ -68,19 +69,14 @@ class CFamilyAstMixin:
     def _iter_nodes(self, root):
         if root is None:
             return
-        stack = [root]
-        while stack:
-            node = stack.pop()
-            yield node
-            for child in reversed(_node_children(node)):
-                stack.append(child)
+        yield from _walk_nodes(root)
 
     def _has_anonymous_namespace_ancestor(self, node: Any) -> bool:
-        parent = node.parent() if node is not None else None
+        parent = node.parent if node is not None else None
         while parent is not None:
             if _is_anonymous_namespace(parent):
                 return True
-            parent = parent.parent()
+            parent = parent.parent
         return False
 
     def _function_syntax(
@@ -115,7 +111,7 @@ class CFamilyAstMixin:
         )
         parameter_metadata = _parameters(parameters, source)
         trailing = _normalized_syntax(
-            source[int(parameters.end_byte()) : int(declarator.end_byte())].decode(
+            source[int(parameters.end_byte) : int(declarator.end_byte)].decode(
                 "utf-8", errors="ignore"
             )
             if parameters is not None
@@ -148,6 +144,7 @@ class CFamilyAstMixin:
         if scope_node is None:
             return out
         exclude_symbols = frozenset(exclude_symbols or ())
+        has_unstructured_control: bool | None = None
 
         for node in scope_nodes or self._iter_nodes(scope_node):
             node_kind = _node_kind(node)
@@ -198,6 +195,11 @@ class CFamilyAstMixin:
                         )
                     )
                 arguments = _node_child_by_field_name(node, "arguments")
+                if has_unstructured_control is None:
+                    has_unstructured_control = any(
+                        _node_kind(candidate) in {"goto_statement", "labeled_statement"}
+                        for candidate in _walk_expression_nodes(scope_node)
+                    )
                 out.append(
                     CFamilyCallSite(
                         symbol=symbol,
@@ -209,8 +211,8 @@ class CFamilyAstMixin:
                             source,
                             language_is_c=legacy_identifiers,
                         ),
-                        start_byte=int(node.start_byte()),
-                        end_byte=int(node.end_byte()),
+                        start_byte=int(node.start_byte),
+                        end_byte=int(node.end_byte),
                         qualified_name=qualified_name,
                         generic_qualified_name=generic_qualified_name,
                         receiver=receiver,
@@ -220,6 +222,7 @@ class CFamilyAstMixin:
                             node,
                             scope_node,
                             source,
+                            has_unstructured_control=has_unstructured_control,
                         ),
                         result=_call_result(node, scope_node, source),
                         lexical_argument_spans=_lexical_argument_spans(
@@ -272,8 +275,8 @@ class CFamilyAstMixin:
                     value=value,
                     operator=operator,
                     line=_node_line(node),
-                    start_byte=int(node.start_byte()),
-                    end_byte=int(node.end_byte()),
+                    start_byte=int(node.start_byte),
+                    end_byte=int(node.end_byte),
                     conditions=_enclosing_conditions(node, scope_node, source),
                 )
             )
@@ -305,8 +308,8 @@ class CFamilyAstMixin:
                 LoopStructure(
                     condition=condition,
                     line=_node_line(node),
-                    start_byte=int(node.start_byte()),
-                    end_byte=int(node.end_byte()),
+                    start_byte=int(node.start_byte),
+                    end_byte=int(node.end_byte),
                     written_identifiers=_written_identifiers(node, source),
                     addressed_identifiers=_addressed_identifiers(node, source),
                 )
@@ -333,8 +336,8 @@ class CFamilyAstMixin:
                 ReturnSite(
                     value=value,
                     line=_node_line(node),
-                    start_byte=int(node.start_byte()),
-                    end_byte=int(node.end_byte()),
+                    start_byte=int(node.start_byte),
+                    end_byte=int(node.end_byte),
                     conditions=_enclosing_conditions(node, scope_node, source),
                     returns_null=_is_null_literal(value_node, source),
                 )
@@ -410,7 +413,7 @@ def _callable_name(node: Any, source: bytes) -> str:
 
 def _lexical_scope(node: Any, source: bytes) -> tuple[str, ...]:
     scopes: list[str] = []
-    parent = node.parent() if node is not None else None
+    parent = node.parent if node is not None else None
     while parent is not None:
         if _node_kind(parent) in {
             "namespace_definition",
@@ -427,7 +430,7 @@ def _lexical_scope(node: Any, source: bytes) -> tuple[str, ...]:
                 name = ""
             if name:
                 scopes.append(name)
-        parent = parent.parent()
+        parent = parent.parent
     scopes.reverse()
     return tuple(scopes)
 
@@ -550,20 +553,20 @@ def _parameters(node: Any, source: bytes) -> tuple[FunctionParameter, ...]:
 def _parameter_type(node: Any, source: bytes) -> str:
     if _node_kind(node) in {"variadic_parameter", "..."}:
         return "..."
-    start = int(node.start_byte())
-    end = int(node.end_byte())
+    start = int(node.start_byte)
+    end = int(node.end_byte)
     excluded: list[tuple[int, int]] = []
     declarator = _node_child_by_field_name(node, "declarator")
     name_node = _declarator_name_node(declarator)
     if name_node is not None:
-        excluded.append((int(name_node.start_byte()), int(name_node.end_byte())))
+        excluded.append((int(name_node.start_byte), int(name_node.end_byte)))
     default = _node_child_by_field_name(node, "default_value")
     if default is not None:
-        excluded.append((int(default.start_byte()), int(default.end_byte())))
+        excluded.append((int(default.start_byte), int(default.end_byte)))
     declarator_kind = _node_kind(declarator) if declarator is not None else ""
     if declarator_kind in {"", "identifier"}:
         excluded.extend(
-            (int(child.start_byte()), int(child.end_byte()))
+            (int(child.start_byte), int(child.end_byte))
             for child in _node_children(node)
             if _node_kind(child) == "type_qualifier"
         )
@@ -574,7 +577,7 @@ def _parameter_type(node: Any, source: bytes) -> str:
             top_level_pointer = nested
             nested = _node_child_by_field_name(top_level_pointer, "declarator")
         excluded.extend(
-            (int(child.start_byte()), int(child.end_byte()))
+            (int(child.start_byte), int(child.end_byte))
             for child in _node_children(top_level_pointer)
             if _node_kind(child) == "type_qualifier"
         )
@@ -644,10 +647,11 @@ def _code_expression(node: Any, source: bytes) -> CodeExpression | None:
     text = _normalized_syntax(_node_text(node, source))
     if not text:
         return None
+    value_nodes = _walk_value_expression_nodes(node)
     identifiers = tuple(
         dict.fromkeys(
             _normalized_syntax(_node_text(candidate, source))
-            for candidate in _walk_value_expression_nodes(node)
+            for candidate in value_nodes
             if _node_kind(candidate) == "identifier"
             and _normalized_syntax(_node_text(candidate, source))
         )
@@ -655,7 +659,7 @@ def _code_expression(node: Any, source: bytes) -> CodeExpression | None:
     field_paths = tuple(
         dict.fromkeys(
             _normalize_field_path(_node_text(candidate, source))
-            for candidate in _walk_value_expression_nodes(node)
+            for candidate in value_nodes
             if _node_kind(candidate) == "field_expression"
             and _normalize_field_path(_node_text(candidate, source))
         )
@@ -664,8 +668,8 @@ def _code_expression(node: Any, source: bytes) -> CodeExpression | None:
     return CodeExpression(
         text=text,
         line=_node_line(node),
-        start_byte=int(node.start_byte()),
-        end_byte=int(node.end_byte()),
+        start_byte=int(node.start_byte),
+        end_byte=int(node.end_byte),
         identifiers=identifiers,
         field_paths=field_paths,
         direct_identifier=_direct_identifier(node, source),
@@ -690,7 +694,7 @@ def _enclosing_conditions(
 ) -> tuple[ControlCondition, ...]:
     conditions: list[ControlCondition] = []
     current = node
-    parent = current.parent() if current is not None else None
+    parent = current.parent if current is not None else None
     while parent is not None and not _same_syntax_node(parent, scope_node):
         kind = _node_kind(parent)
         condition_node: Any | None = None
@@ -711,7 +715,7 @@ def _enclosing_conditions(
                 )
             )
         current = parent
-        parent = current.parent()
+        parent = current.parent
     conditions.reverse()
     return tuple(conditions)
 
@@ -720,16 +724,15 @@ def _preceding_must_conditions(
     node: Any,
     scope_node: Any,
     source: bytes,
+    *,
+    has_unstructured_control: bool,
 ) -> tuple[ControlCondition, ...]:
-    if any(
-        _node_kind(candidate) in {"goto_statement", "labeled_statement"}
-        for candidate in _walk_expression_nodes(scope_node)
-    ):
+    if has_unstructured_control:
         return ()
 
     conditions: list[ControlCondition] = []
     current = node
-    parent = current.parent() if current is not None else None
+    parent = current.parent if current is not None else None
     loop_kinds = {
         "do_statement",
         "for_range_loop",
@@ -746,6 +749,8 @@ def _preceding_must_conditions(
                 if terminal is not None:
                     conditions.append(terminal)
                     continue
+                if not conditions:
+                    continue
                 killed = set(_written_identifiers(statement, source))
                 killed.update(_addressed_identifiers(statement, source))
                 if killed:
@@ -756,7 +761,7 @@ def _preceding_must_conditions(
                         is not None
                     ]
         current = parent
-        parent = current.parent()
+        parent = current.parent
     return tuple(
         sorted(
             conditions,
@@ -850,8 +855,8 @@ def _lexical_argument_spans(
 ) -> tuple[tuple[int, int], ...]:
     if arguments is None:
         return ()
-    scanned = _scan_invocation(source, int(arguments.start_byte()))
-    if scanned is None or scanned[0] != int(arguments.end_byte()):
+    scanned = _scan_invocation(source, int(arguments.start_byte))
+    if scanned is None or scanned[0] != int(arguments.end_byte):
         return ()
     spans: list[tuple[int, int]] = []
     for start, end in scanned[1]:
@@ -869,7 +874,7 @@ def _call_result(
     source: bytes,
 ) -> CodeExpression | None:
     current = call_node
-    parent = current.parent() if current is not None else None
+    parent = current.parent if current is not None else None
     transparent = {
         "cast_expression",
         "parenthesized_expression",
@@ -894,7 +899,7 @@ def _call_result(
         if kind not in transparent:
             return None
         current = parent
-        parent = current.parent()
+        parent = current.parent
     return None
 
 
@@ -1012,7 +1017,7 @@ def _is_null_literal(node: Any, source: bytes) -> bool:
 
 
 def _nested_callable_return(node: Any, scope_node: Any) -> bool:
-    parent = node.parent() if node is not None else None
+    parent = node.parent if node is not None else None
     while parent is not None and not _same_syntax_node(parent, scope_node):
         if _node_kind(parent) in {
             "function_definition",
@@ -1020,7 +1025,7 @@ def _nested_callable_return(node: Any, scope_node: Any) -> bool:
             "method_definition",
         }:
             return True
-        parent = parent.parent()
+        parent = parent.parent
     return False
 
 
@@ -1086,13 +1091,7 @@ def _direct_field_path(node: Any, source: bytes) -> str:
 def _walk_expression_nodes(node: Any) -> tuple[Any, ...]:
     if node is None:
         return ()
-    nodes: list[Any] = []
-    stack = [node]
-    while stack:
-        current = stack.pop()
-        nodes.append(current)
-        stack.extend(reversed(_node_children(current)))
-    return tuple(nodes)
+    return tuple(_walk_nodes(node))
 
 
 def _walk_value_expression_nodes(node: Any) -> tuple[Any, ...]:
@@ -1112,9 +1111,9 @@ def _walk_value_expression_nodes(node: Any) -> tuple[Any, ...]:
 def _contains_node(container: Any, candidate: Any) -> bool:
     if container is None or candidate is None:
         return False
-    return int(container.start_byte()) <= int(candidate.start_byte()) and int(
-        candidate.end_byte()
-    ) <= int(container.end_byte())
+    return int(container.start_byte) <= int(candidate.start_byte) and int(
+        candidate.end_byte
+    ) <= int(container.end_byte)
 
 
 def _same_syntax_node(first: Any, second: Any) -> bool:
@@ -1122,12 +1121,12 @@ def _same_syntax_node(first: Any, second: Any) -> bool:
         return first is second
     return (
         _node_kind(first),
-        int(first.start_byte()),
-        int(first.end_byte()),
+        int(first.start_byte),
+        int(first.end_byte),
     ) == (
         _node_kind(second),
-        int(second.start_byte()),
-        int(second.end_byte()),
+        int(second.start_byte),
+        int(second.end_byte),
     )
 
 
@@ -1181,8 +1180,8 @@ def _constructor_call_site(
         line=_node_line(node),
         argument_count=_argument_count(arguments),
         kind="constructor",
-        start_byte=int(node.start_byte()),
-        end_byte=int(node.end_byte()),
+        start_byte=int(node.start_byte),
+        end_byte=int(node.end_byte),
         qualified_name=f"{type_name}::{symbol}",
         generic_qualified_name=f"{generic_type_name}::{symbol}",
     )

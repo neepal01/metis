@@ -12,9 +12,7 @@ from typing import Any
 from uuid import uuid4
 
 from metis.sarif.triage import apply_triage_result
-from metis.sarif.validation import DEFAULT_SARIF_LIMITS
-from metis.sarif.validation import SarifLimits
-from metis.sarif.validation import load_json_object_file
+from metis.json_io import load_json_object_file
 from metis.sarif.validation import load_metis_sarif_file
 from metis.sarif.validation import save_metis_sarif_file
 from metis.sarif.validation import validate_metis_sarif as validate_metis_sarif
@@ -68,12 +66,10 @@ class ExternalStageService:
         codebase_path: str,
         config: dict[str, Any] | None,
         runner: ExternalStageRunner | None = None,
-        sarif_limits: SarifLimits = DEFAULT_SARIF_LIMITS,
     ):
         self.codebase_path = codebase_path
         self.config = ExternalStagesConfigModel.model_validate(config or {})
         self.runner = runner or ExternalStageRunner()
-        self.sarif_limits = sarif_limits
 
     def run_pipeline(
         self,
@@ -117,7 +113,9 @@ class ExternalStageService:
         run_dir: str | Path | None = None,
     ) -> ExternalAnalysisResult:
         stage = self._analysis_stage(name)
-        _validate_analysis_bindings(name, stage)
+        _validate_bindings(
+            name, stage, label="analysis", required={"codebase_path", "output_sarif"}
+        )
         resolved_run_dir = _resolve_run_dir(run_dir)
         resolved_run_dir.mkdir(parents=True, exist_ok=True)
         codebase = _resolve_codebase_path(codebase_path or self.codebase_path)
@@ -150,7 +148,7 @@ class ExternalStageService:
             log_path=resolved_run_dir / "analysis-process.json",
         )
         _require_file(output_sarif, "analysis SARIF")
-        load_metis_sarif_file(output_sarif, limits=self.sarif_limits)
+        load_metis_sarif_file(output_sarif)
         return ExternalAnalysisResult(
             run_dir=resolved_run_dir,
             request_path=request_path,
@@ -167,12 +165,17 @@ class ExternalStageService:
         run_dir: str | Path | None = None,
     ) -> ExternalValidationResult:
         stage = self._validation_stage(name)
-        _validate_validation_bindings(name, stage)
+        _validate_bindings(
+            name,
+            stage,
+            label="validation",
+            required={"codebase_path", "input_sarif", "output_decision"},
+        )
         resolved_run_dir = _resolve_run_dir(run_dir)
         resolved_run_dir.mkdir(parents=True, exist_ok=True)
         codebase = _resolve_codebase_path(codebase_path or self.codebase_path)
         input_sarif_path = Path(input_sarif).resolve()
-        load_metis_sarif_file(input_sarif_path, limits=self.sarif_limits)
+        load_metis_sarif_file(input_sarif_path)
         output_decision = resolved_run_dir / "validation-decision.json"
         validated_sarif = resolved_run_dir / "validated.sarif"
         for output in (output_decision, validated_sarif):
@@ -201,8 +204,10 @@ class ExternalStageService:
             log_path=resolved_run_dir / "validation-process.json",
         )
         _require_file(output_decision, "validation decision")
-        decisions = _load_validation_result(output_decision, self.sarif_limits)
-        payload = load_metis_sarif_file(input_sarif_path, limits=self.sarif_limits)
+        decisions = ValidationResultModel.model_validate(
+            load_json_object_file(output_decision)
+        )
+        payload = load_metis_sarif_file(input_sarif_path)
         for decision in decisions.decisions:
             applied = apply_triage_result(
                 payload,
@@ -217,7 +222,7 @@ class ExternalStageService:
                     "Validation decision references missing SARIF result: "
                     f"run={decision.run_index} result={decision.result_index}"
                 )
-        save_metis_sarif_file(validated_sarif, payload, limits=self.sarif_limits)
+        save_metis_sarif_file(validated_sarif, payload)
         return ExternalValidationResult(
             run_dir=resolved_run_dir,
             request_path=request_path,
@@ -246,42 +251,24 @@ class ExternalStageService:
             ) from exc
 
 
-def _validate_analysis_bindings(name: str, stage: ExternalStageCommandModel) -> None:
+def _validate_bindings(
+    name: str,
+    stage: ExternalStageCommandModel,
+    *,
+    label: str,
+    required: set[str],
+) -> None:
     placeholders = command_placeholders(stage.command)
     if "request_path" in placeholders:
         return
-    required = {"codebase_path", "output_sarif"}
     missing = sorted(required - placeholders)
     if missing:
         raise ValueError(
-            f"External analysis stage {name!r} must reference {{request_path}} "
+            f"External {label} stage {name!r} must reference {{request_path}} "
             "or placeholders: "
             + ", ".join(f"{{{item}}}" for item in sorted(required))
             + f"; missing {', '.join(missing)}"
         )
-
-
-def _validate_validation_bindings(name: str, stage: ExternalStageCommandModel) -> None:
-    placeholders = command_placeholders(stage.command)
-    if "request_path" in placeholders:
-        return
-    required = {"codebase_path", "input_sarif", "output_decision"}
-    missing = sorted(required - placeholders)
-    if missing:
-        raise ValueError(
-            f"External validation stage {name!r} must reference {{request_path}} "
-            "or placeholders: "
-            + ", ".join(f"{{{item}}}" for item in sorted(required))
-            + f"; missing {', '.join(missing)}"
-        )
-
-
-def _load_validation_result(path: Path, limits: SarifLimits) -> ValidationResultModel:
-    payload = load_json_object_file(path, limits=limits)
-    result = ValidationResultModel.model_validate(payload)
-    if len(result.decisions) > limits.max_findings:
-        raise ValueError("External validation exceeds the decision limit")
-    return result
 
 
 def _run_stage_and_log(

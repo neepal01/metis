@@ -139,6 +139,7 @@ def build_builtin_execution(
                 ),
                 navigation_manifest=capabilities.manifest("navigation"),
                 campaign_evidence_manifest=capabilities.manifest("campaign_evidence"),
+                max_input_tokens=engine_config.max_token_length,
             )
             registrations.append(triage_node.create_node(triage_classifier))
 

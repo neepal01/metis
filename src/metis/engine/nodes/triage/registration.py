@@ -8,6 +8,8 @@ from typing import TYPE_CHECKING
 from typing import cast
 
 from metis.engine.codegraph import CodeGraphReference
+from metis.engine.codegraph import FunctionNode
+from metis.engine.codegraph.queries import _build_reverse_edges
 from metis.engine.execution.contracts import CapabilityRequirement
 from metis.engine.execution.contracts import EmptyNodeConfiguration
 from metis.engine.execution.contracts import NodeInvocation
@@ -47,8 +49,19 @@ def create_node(
             if reference is not None
             else None
         )
+        run = cast(TriageRun, invocation.inputs["request"])
+        codegraph_file_nodes: dict[str, list[FunctionNode]] | None = None
+        codegraph_callers: dict[str, tuple[str, ...]] | None = None
+        if codegraph is not None and run.remaining:
+            codegraph_file_nodes = {}
+            for node in codegraph.nodes.values():
+                codegraph_file_nodes.setdefault(node.file_path, []).append(node)
+            codegraph_callers = {
+                name: tuple(dict.fromkeys(callers))
+                for name, callers in _build_reverse_edges(codegraph, str).items()
+            }
         triaged = adjudicator.triage_run(
-            cast(TriageRun, invocation.inputs["request"]),
+            run,
             jobs=invocation.context.jobs,
             classifier=partial(
                 classifier_service.classify,
@@ -62,6 +75,8 @@ def create_node(
                 model_tool_max_rounds=(
                     invocation.context.runtime.model_tool_max_rounds
                 ),
+                codegraph_file_nodes=codegraph_file_nodes,
+                codegraph_callers=codegraph_callers,
             ),
             memory_service=memory,
             progress_callback=invocation.context.callbacks.progress,

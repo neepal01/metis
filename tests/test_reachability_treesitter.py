@@ -64,46 +64,29 @@ class _Node:
         start_byte=0,
         end_byte=0,
     ):
-        self._type = node_type
+        self.type = node_type
         self.text = text
-        self._start_position = _Point(line - 1, 0)
-        self._end_position = _Point(line - 1, 0)
-        self._start_byte = start_byte
-        self._end_byte = end_byte
-        self._children = children or []
+        self.start_point = _Point(line - 1, 0)
+        self.end_point = _Point(line - 1, 0)
+        self.start_byte = start_byte
+        self.end_byte = end_byte
+        self.children = children or []
         self._fields = fields or {}
-        self._parent = None
-        for child in self._children:
-            child._parent = self
+        self.parent = None
+        for child in self.children:
+            child.parent = self
         for child in self._fields.values():
-            child._parent = self
+            child.parent = self
 
-    def kind(self):
-        return self._type
-
-    def start_position(self):
-        return self._start_position
-
-    def end_position(self):
-        return self._end_position
-
-    def start_byte(self):
-        return self._start_byte
-
-    def end_byte(self):
-        return self._end_byte
-
+    @property
     def child_count(self):
-        return len(self._children)
+        return len(self.children)
 
     def child(self, index):
-        return self._children[index]
+        return self.children[index]
 
     def child_by_field_name(self, name):
         return self._fields.get(name)
-
-    def parent(self):
-        return self._parent
 
 
 def _codegraph_service(codebase_path, *, files=(), annotation_settings=None):
@@ -1130,6 +1113,39 @@ def test_codegraph_service_preserves_typed_diagnostics_when_cached(tmp_path):
 
     assert first == [warning]
     assert second == [warning]
+
+
+@pytest.mark.parametrize("error_count", [0, 1, 10])
+def test_codegraph_progress_summarizes_errors_without_losing_diagnostics(
+    tmp_path, error_count
+):
+    files = ("one.c", "failed.c") if error_count else ("one.c",)
+    service = _codegraph_service(str(tmp_path), files=files)
+    warning = CodeGraphDiagnostic("one.c", "partial parse", severity="warning")
+    errors = tuple(
+        CodeGraphDiagnostic("failed.c", f"error {index}")
+        for index in range(error_count)
+    )
+    diagnostics = (warning, warning, *errors, *errors)
+    service._providers["c_family"].build_graph = lambda **_kwargs: CodeGraphResult(
+        CodeGraph(),
+        processed_files=("one.c",),
+        failed_files=("failed.c",) if error_count else (),
+        diagnostics=diagnostics,
+    )
+    progress = []
+    observed = []
+
+    reference = service.materialize(
+        progress_callback=progress.append, diagnostic_callback=observed.append
+    )
+
+    done = next(event for event in progress if event["event"] == "codegraph_done")
+    assert done["errors"] == [f"error {index}" for index in range(min(error_count, 8))]
+    assert done["error_count"] == 2 * error_count
+    assert done["warning_count"] == 2
+    assert observed == list(diagnostics)
+    assert reference.diagnostics == diagnostics
 
 
 def test_structured_relationships_affect_cache_keys_and_scoped_copies():

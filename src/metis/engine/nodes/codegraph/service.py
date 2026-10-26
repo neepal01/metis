@@ -174,7 +174,9 @@ class CodeGraphService:
             )
 
     def _selected_files(self) -> tuple[str, ...]:
-        candidates = self._repository.get_code_files(include_suffixed_sources=True)
+        candidates = self._repository.get_code_files(
+            include_suffixed_sources=True, apply_review_filters=False
+        )
         return tuple(
             sorted({str(path) for path in candidates if self.supports_file(str(path))})
         )
@@ -317,7 +319,19 @@ class CodeGraphService:
                     "nodes": graph.node_count(),
                     "edges": graph.edge_count(),
                     "globals": len(graph.get_globals()),
-                    "errors": [diagnostic.message for diagnostic in diagnostics],
+                    "errors": list(
+                        dict.fromkeys(
+                            diagnostic.message
+                            for diagnostic in diagnostics
+                            if diagnostic.severity == "error"
+                        )
+                    )[:8],
+                    "error_count": sum(
+                        diagnostic.severity == "error" for diagnostic in diagnostics
+                    ),
+                    "warning_count": sum(
+                        diagnostic.severity == "warning" for diagnostic in diagnostics
+                    ),
                 }
             )
         return CodeGraphResult(

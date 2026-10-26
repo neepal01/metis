@@ -8,6 +8,7 @@ import importlib
 import inspect
 import logging
 from collections.abc import Iterable, Mapping
+from concurrent.futures import CancelledError
 from dataclasses import dataclass, field, fields
 from importlib import metadata
 from importlib.resources import files
@@ -16,22 +17,13 @@ from typing import Any
 
 from metis.configuration import _deep_merge
 from metis.configuration import load_yaml
+from metis.utils import normalized_string_tuple
 
 
 logger = logging.getLogger("metis")
 
 _PLUGIN_PACKAGE = "metis.plugins"
 _LANGUAGE_PLUGIN_ENTRY_POINT_GROUP = "metis.language_plugins"
-
-
-def _as_tuple(values: Iterable[Any] | None) -> tuple[str, ...]:
-    if values is None:
-        return ()
-    if not isinstance(values, (list, tuple)) or any(
-        not isinstance(value, str) for value in values
-    ):
-        raise ValueError("Language plugin manifest lists must contain strings")
-    return tuple(value.strip().lower() for value in values if value.strip())
 
 
 def _normalise_resource(resource: str | None) -> str | None:
@@ -103,16 +95,22 @@ class LanguagePluginManifest:
             "implementation",
             str(self.implementation or "").strip(),
         )
-        object.__setattr__(self, "extensions", _as_tuple(self.extensions))
-        object.__setattr__(self, "source_extensions", _as_tuple(self.source_extensions))
-        object.__setattr__(self, "header_extensions", _as_tuple(self.header_extensions))
-        object.__setattr__(
-            self,
+        for field_name in (
+            "extensions",
+            "source_extensions",
+            "header_extensions",
             "filename_patterns",
-            _as_tuple(self.filename_patterns),
-        )
-        aliases = _as_tuple(self.aliases) or (name,)
-        object.__setattr__(self, "aliases", aliases)
+            "aliases",
+        ):
+            object.__setattr__(
+                self,
+                field_name,
+                normalized_string_tuple(
+                    getattr(self, field_name),
+                    error="Language plugin manifest lists must contain strings",
+                ),
+            )
+        object.__setattr__(self, "aliases", self.aliases or (name,))
         object.__setattr__(
             self,
             "capabilities",
@@ -498,6 +496,8 @@ def _load_entry_point_manifests() -> list[LanguagePluginManifest]:
                 if isinstance(loaded, LanguagePluginManifest)
                 else LanguagePluginManifest.from_mapping(loaded)
             )
+        except CancelledError:
+            raise
         except Exception as exc:
             logger.warning(
                 "Failed to load language plugin manifest '%s': %s",

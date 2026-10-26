@@ -16,7 +16,11 @@ range because there is not yet a top-level stable provider facade.
 For backends exposing the compatible Responses API, reuse the shared base
 classes in `src/metis/providers/openai_compatible.py`. A backend that supports
 only Chat Completions needs its own chat implementation because the shared base
-forces `use_responses_api=True`:
+forces `use_responses_api=True`.
+
+The shared provider defaults to a 600-second timeout (`timeout` or `request_timeout`
+can override it). `JsonPromptRunner` owns retries and sets SDK `max_retries=0`;
+see the [model-request contract](../execution-graph.md#external-stages).
 
 ```python
 from metis.providers.config import ApiKeySources
@@ -128,7 +132,8 @@ providers still load without the optional dependency.
 ## User Configuration
 
 Chat config goes under `llm_provider`; embedding config goes under the
-top-level `embedding_provider` block:
+top-level `embedding_provider` block. Save these settings in a trusted file
+and select it with `--config PATH`; repository-local files are not discovered:
 
 ```yaml
 llm_provider:

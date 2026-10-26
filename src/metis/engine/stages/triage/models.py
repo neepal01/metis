@@ -20,6 +20,8 @@ from metis.sarif.models import SarifPayload
 from metis.sarif.triage import SarifFinding
 from metis.sarif.triage import extract_findings
 
+TRIAGE_FINDING_FAILED = "triage.finding_failed"
+
 
 @dataclass(frozen=True, slots=True)
 class TriageRun:
@@ -75,15 +77,16 @@ class TriageState(TypedDict, total=False):
     triage_system_prompt: str
     triage_decision_prompt: str
     evidence_pack: str
-    tool_transcript: str
+    decision: TriageDecisionModel
     decision_status: str
     decision_reason: str
     decision_evidence: list[str]
     decision_resolution_chain: list[str]
     decision_unresolved_hops: list[str]
-    evidence_gate_missing: list[str]
-    evidence_obligations: list[str]
-    obligation_coverage: dict[str, int]
+    source_observations: list[dict[str, Any]]
+    decision_source: str
+    decision_validation_errors: list[str]
+    triage_model_status: str | None
 
 
 class TriageDecisionModel(BaseModel):
