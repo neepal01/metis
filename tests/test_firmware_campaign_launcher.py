@@ -362,6 +362,8 @@ def test_metis_cli_dispatches_firmware_campaign_before_engine_construction(
         "additional_source_paths": [],
         "policy_only": False,
         "policy_refresh_bundle": None,
+        "technical_state_correction": None,
+        "technical_state_approval": None,
     }
 
 

@@ -424,6 +424,16 @@ def main():
         help="Hash-bound isolated policy/current-ticket refresh bundle.",
     )
     parser.add_argument(
+        "--firmware-technical-state-correction",
+        metavar="CORRECTION",
+        help="Approval-bound non-executing technical-state correction.",
+    )
+    parser.add_argument(
+        "--firmware-technical-state-approval",
+        metavar="APPROVAL",
+        help="Recorded approval for the exact technical-state correction.",
+    )
+    parser.add_argument(
         "--tools",
         help=argparse.SUPPRESS,
     )
@@ -449,6 +459,22 @@ def main():
         parser.error("--firmware-policy-only requires --resume and --firmware-policy-refresh")
     if args.firmware_policy_refresh and not args.firmware_policy_only:
         parser.error("--firmware-policy-refresh requires --firmware-policy-only")
+    correction_mode = bool(
+        args.firmware_technical_state_correction
+        or args.firmware_technical_state_approval
+    )
+    if correction_mode and (
+        not args.firmware_campaign
+        or not args.resume
+        or not args.firmware_technical_state_correction
+        or not args.firmware_technical_state_approval
+    ):
+        parser.error(
+            "technical-state correction requires --firmware-campaign, --resume, "
+            "--firmware-technical-state-correction and --firmware-technical-state-approval"
+        )
+    if correction_mode and (args.firmware_policy_only or args.firmware_policy_refresh):
+        parser.error("technical-state correction is separate from policy-only refresh")
     if args.firmware_campaign:
         incompatible = [
             name
@@ -497,6 +523,8 @@ def main():
             additional_source_paths=args.firmware_source_path,
             policy_only=args.firmware_policy_only,
             policy_refresh_bundle=Path(args.firmware_policy_refresh) if args.firmware_policy_refresh else None,
+            technical_state_correction=Path(args.firmware_technical_state_correction) if args.firmware_technical_state_correction else None,
+            technical_state_approval=Path(args.firmware_technical_state_approval) if args.firmware_technical_state_approval else None,
         )
         if exit_code:
             raise SystemExit(exit_code)

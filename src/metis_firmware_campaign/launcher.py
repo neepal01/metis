@@ -126,6 +126,8 @@ def launch(
     additional_source_paths: list[str] | None = None,
     policy_only: bool = False,
     policy_refresh_bundle: Path | None = None,
+    technical_state_correction: Path | None = None,
+    technical_state_approval: Path | None = None,
 ) -> int:
     """Run or resume the autonomous workflow from a Metis CLI invocation."""
 
@@ -158,6 +160,12 @@ def launch(
         state = _project_output(
             project_dir, launcher.get("state", "automation"), "campaign state"
         )
+        if (technical_state_correction or technical_state_approval) and (
+            not resume or not technical_state_correction or not technical_state_approval
+        ):
+            raise autonomous_campaign.ContractError(
+                "technical-state correction requires resume and both artifacts"
+            )
         _require_outside_source(candidate, resolved_codebase, "candidate database")
         _require_outside_source(state, resolved_codebase, "campaign state")
         if state.exists() and any(state.iterdir()) and not resume:
@@ -197,6 +205,8 @@ def launch(
             credential_env=[],
             policy_only=policy_only,
             policy_refresh_bundle=policy_refresh_bundle,
+            technical_state_correction=technical_state_correction,
+            technical_state_approval=technical_state_approval,
         )
         result = autonomous_campaign.run(arguments)
     except (

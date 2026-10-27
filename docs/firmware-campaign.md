@@ -122,6 +122,32 @@ boundary, not an OS sandbox against malicious project adapters.
 
 Default Metis behavior is unchanged when `--firmware-campaign` is absent.
 
+Capability control 6.9 (REVIEW) adds a distinct non-executing correction path:
+
+```bash
+uv run --no-sync metis --firmware-campaign /path/to/profile.json \
+  --codebase-path /path/to/source --resume \
+  --firmware-technical-state-correction /path/to/correction.json \
+  --firmware-technical-state-approval /path/to/approval.json
+```
+
+It does not weaken policy-only lineage admission. It permits only the recorded
+four-field `validation_run` transition and one exact unresolved queue row,
+verifies current policy evidence and complete immutable provider prerequisites,
+and uses the authoritative-writer lock plus exact prepared-byte recovery. The
+transition commits every reopen request present at correction time. Later
+policy-reconciliation queue indexes extend that commitment: requests may gain
+evidence-backed resolution, but cannot silently disappear or change identity.
+This does not freeze the queue count or reject legitimate additions. The
+project-specific root, run and mutation belong only in the correction artifact.
+A recorded human authorization is required; an artifact hash alone is not
+treated as approval. Bound approval and evidence locators are absolute and
+remain stable after the transition is archived. Recovery preflights every
+destination, including `recovery.json`, before authoritative mutation; only an
+exact record for the pending transaction is reusable. An expired predecessor
+can enter only the already-verified fresh policy-refresh lane. This REVIEW
+control does not authorize providers, targets, release or submission.
+
 ## Triage-only before/after benchmark
 
 `python -m metis_firmware_campaign.triage_benchmark` compares result files from
