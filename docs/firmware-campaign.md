@@ -122,7 +122,7 @@ boundary, not an OS sandbox against malicious project adapters.
 
 Default Metis behavior is unchanged when `--firmware-campaign` is absent.
 
-Capability control 6.9 (REVIEW) adds a distinct non-executing correction path:
+Capability control 6.9 (FROZEN) adds a distinct non-executing correction path:
 
 ```bash
 uv run --no-sync metis --firmware-campaign /path/to/profile.json \
@@ -145,8 +145,9 @@ treated as approval. Bound approval and evidence locators are absolute and
 remain stable after the transition is archived. Recovery preflights every
 destination, including `recovery.json`, before authoritative mutation; only an
 exact record for the pending transaction is reusable. An expired predecessor
-can enter only the already-verified fresh policy-refresh lane. This REVIEW
-control does not authorize providers, targets, release or submission.
+can enter only the already-verified fresh policy-refresh lane. This FROZEN
+control does not authorize providers, targets, refreshed-evidence promotion or
+submission.
 
 ## Triage-only before/after benchmark
 
