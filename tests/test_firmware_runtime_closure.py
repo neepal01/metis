@@ -49,12 +49,15 @@ def test_versioned_output_contracts_are_isolated_and_standalone_parity_bound() -
     assert "policy-reconciliation-input.json" in (
         autonomous_campaign.V66_OUTPUTS["collect-threat-policy"]
     )
+    assert autonomous_campaign.V67_OUTPUTS["policy-reconciliation"] < (
+        autonomous_campaign.V68_OUTPUTS["policy-reconciliation"]
+    )
     assert autonomous_campaign.V6_OUTPUTS["validate-packets"] < (
         autonomous_campaign.V62_OUTPUTS["validate-packets"]
     )
     contracts = [
         autonomous_campaign.versioned_outputs(version)
-        for version in ("6", "6.2", "6.3", "6.4", "6.5", "6.6", "6.6.1", "6.7")
+        for version in ("6", "6.2", "6.3", "6.4", "6.5", "6.6", "6.6.1", "6.7", "6.8")
     ]
     for index, contract in enumerate(contracts):
         for other in contracts[index + 1 :]:

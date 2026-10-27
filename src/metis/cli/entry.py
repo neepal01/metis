@@ -414,6 +414,16 @@ def main():
         help="Resume an existing --firmware-campaign by its content receipts.",
     )
     parser.add_argument(
+        "--firmware-policy-only",
+        action="store_true",
+        help="Run only policy refresh, reconciliation, reporting and sealing stages.",
+    )
+    parser.add_argument(
+        "--firmware-policy-refresh",
+        metavar="BUNDLE",
+        help="Hash-bound isolated policy/current-ticket refresh bundle.",
+    )
+    parser.add_argument(
         "--tools",
         help=argparse.SUPPRESS,
     )
@@ -433,6 +443,12 @@ def main():
         parser.error("--resume requires --firmware-campaign")
     if args.firmware_source_path and not args.firmware_campaign:
         parser.error("--firmware-source-path requires --firmware-campaign")
+    if (args.firmware_policy_only or args.firmware_policy_refresh) and not args.firmware_campaign:
+        parser.error("--firmware-policy-only requires --firmware-campaign")
+    if args.firmware_policy_only and (not args.resume or not args.firmware_policy_refresh):
+        parser.error("--firmware-policy-only requires --resume and --firmware-policy-refresh")
+    if args.firmware_policy_refresh and not args.firmware_policy_only:
+        parser.error("--firmware-policy-refresh requires --firmware-policy-only")
     if args.firmware_campaign:
         incompatible = [
             name
@@ -479,6 +495,8 @@ def main():
             codebase_path=Path(args.codebase_path),
             resume=args.resume,
             additional_source_paths=args.firmware_source_path,
+            policy_only=args.firmware_policy_only,
+            policy_refresh_bundle=Path(args.firmware_policy_refresh) if args.firmware_policy_refresh else None,
         )
         if exit_code:
             raise SystemExit(exit_code)

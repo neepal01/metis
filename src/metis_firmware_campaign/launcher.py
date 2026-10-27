@@ -23,7 +23,7 @@ def _profile(path: Path) -> dict:
             f"firmware campaign profile must be a regular file: {resolved}"
         )
     value = json.loads(resolved.read_text(encoding="utf-8"))
-    if value.get("schema_version") not in {"5", "6", "6.2", "6.3", "6.4", "6.5", "6.6", "6.6.1", "6.7"}:
+    if value.get("schema_version") not in {"5", "6", "6.2", "6.3", "6.4", "6.5", "6.6", "6.6.1", "6.7", "6.8"}:
         raise autonomous_campaign.ContractError(
             "Metis firmware campaign launch requires a schema-v5/v6 profile"
         )
@@ -124,6 +124,8 @@ def launch(
     codebase_path: Path,
     resume: bool,
     additional_source_paths: list[str] | None = None,
+    policy_only: bool = False,
+    policy_refresh_bundle: Path | None = None,
 ) -> int:
     """Run or resume the autonomous workflow from a Metis CLI invocation."""
 
@@ -193,6 +195,8 @@ def launch(
                 resolved_profile, profile, "confluence_selectors"
             ),
             credential_env=[],
+            policy_only=policy_only,
+            policy_refresh_bundle=policy_refresh_bundle,
         )
         result = autonomous_campaign.run(arguments)
     except (

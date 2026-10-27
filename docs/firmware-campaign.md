@@ -96,6 +96,30 @@ stage derives scanner totals exclusively from `SCANNER` imports and keeps
 auxiliary subjects, all campaign subjects, and unique roots separately
 reconciled.
 
+Capability 6.8 binds current policy and ticket decisions to separately hashed
+source populations and a successful, unexpired refresh lease. It records
+append-only scope transitions, preserves historical decisions as
+non-authorizing history, and queues only roots whose technical, deduplication
+or reproduction assumptions changed. Completion, evidence currency, scope
+closure and submission readiness remain separate.
+
+An already sealed workflow can apply separately authorized, source-read-only
+staging artifacts without dispatching providers:
+
+```bash
+uv run --no-sync metis \
+  --firmware-campaign /path/to/project/profile.json \
+  --codebase-path /path/to/project/source \
+  --resume --firmware-policy-only \
+  --firmware-policy-refresh /path/to/isolated/refresh.json
+```
+
+The refresh source artifacts must remain beside the bundle. In policy-only
+mode the coordinator verifies every prior technical/provider receipt, removes
+connector and provider credentials from child environments, and executes only
+collection-to-policy/report/package/seal phases. It is an orchestration
+boundary, not an OS sandbox against malicious project adapters.
+
 Default Metis behavior is unchanged when `--firmware-campaign` is absent.
 
 ## Triage-only before/after benchmark

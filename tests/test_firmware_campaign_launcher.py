@@ -360,6 +360,8 @@ def test_metis_cli_dispatches_firmware_campaign_before_engine_construction(
         "codebase_path": source,
         "resume": True,
         "additional_source_paths": [],
+        "policy_only": False,
+        "policy_refresh_bundle": None,
     }
 
 
