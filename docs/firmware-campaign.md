@@ -160,3 +160,21 @@ that claims provider authorization.
 This comparison measures triage quality only. It does not measure discovery
 recall, code-graph coverage, reproducer quality, or whole-pipeline superiority.
 Running either provider-backed side requires separate approval.
+
+## Capability 6.10 policy decision dimensions (REVIEW)
+
+This control revision retains the schema-6.8 scope projection and finalized
+6.9 technical-state controls. Policy collection must emit the v6.10 matrix.
+Each evaluation binds its decision dimension, exact source clause, all four
+authority tiers and semantic root-specific applicability. The coordinator
+rejects older policy input under this capability, and direct consumers cannot
+downgrade a committed v6.10 candidate. Separate
+clause artifacts require an explicit authoritative-member role, and structured
+applicability evidence must select the exact root, authority, clause and
+component/build/attacker context, including the assessed clause-content hash.
+A digest mention alone conveys no authority; raw same-source JSON remains
+supported when it is not the typed authority-manifest object.
+Submission pauses and bounty,
+owner, disclosure or readiness decisions cannot change programme scope.
+Incomplete tickets remain unavailable exact-owner/novelty evidence. Both
+inclusion and exclusion are required; keyword classification is not supported.

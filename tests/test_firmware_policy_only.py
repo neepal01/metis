@@ -22,6 +22,10 @@ STANDALONE = (
     Path(__file__).resolve().parents[2]
     / "portable-firmware-campaign/.agents/skills/firmware-finding-pipeline/scripts/autonomous_campaign.py"
 )
+V610_FIXTURE = (
+    Path(__file__).resolve().parents[2]
+    / "portable-firmware-campaign/.agents/skills/firmware-campaign-bootstrap/scripts/test_policy_decision_dimensions_v610.py"
+)
 
 
 def implementations():
@@ -31,6 +35,19 @@ def implementations():
     assert spec.loader
     spec.loader.exec_module(standalone)
     return (("metis", campaign), ("standalone", standalone))
+
+
+def current_policy_fixture(root: Path, *, lifetime=timedelta(hours=23)):
+    spec = importlib.util.spec_from_file_location("current_policy_fixture", V610_FIXTURE)
+    fixture = importlib.util.module_from_spec(spec)
+    assert spec.loader
+    spec.loader.exec_module(fixture)
+    reconciler = fixture.load(fixture.SCRIPT, "current_policy_reconciler")
+    base = fixture.load(fixture.V68_TEST, "current_policy_candidate")
+    candidate = root / "candidate.db"
+    base.candidate(candidate, reconciler)
+    evidence = fixture.matrix(root, reconciler, candidate, mode="arm", lifetime=lifetime)
+    return fixture, reconciler, candidate, evidence
 
 
 def test_policy_decision_controls_end_to_end() -> None:
@@ -446,25 +463,12 @@ def test_policy_only_rejects_explicit_credentials(
 
 
 def test_cached_scope_expires_in_both_coordinators(tmp_path: Path) -> None:
-    spec = importlib.util.spec_from_file_location(
-        "policy_expiry_fixture",
-        Path(__file__).resolve().parents[2]
-        / "portable-firmware-campaign/.agents/skills/firmware-campaign-bootstrap/scripts/test_policy_decision_controls_v68.py",
-    )
-    fixture = importlib.util.module_from_spec(spec)
-    assert spec.loader
-    spec.loader.exec_module(fixture)
-    reconciler = fixture.load()
     for name, implementation in implementations():
         root = tmp_path / name
         root.mkdir()
-        candidate = root / "candidate.db"
-        fixture.candidate(candidate, reconciler)
-        now = datetime.now(timezone.utc)
-        source, lease = fixture.evidence(
-            root, now - timedelta(seconds=1), now + timedelta(seconds=2)
+        fixture, reconciler, candidate, evidence = current_policy_fixture(
+            root, lifetime=timedelta(seconds=3)
         )
-        evidence = fixture.input_file(root, reconciler, candidate, source, lease)
         state = root / "state"
         dependency_root = state / "stages/collect-threat-policy/dependency"
         dependency_root.mkdir(parents=True)
@@ -516,8 +520,10 @@ def test_cached_scope_expires_in_both_coordinators(tmp_path: Path) -> None:
             {},
             {"collect-threat-policy": dependency},
         )
+        evidence_value = json.loads(evidence.read_text())
+        lease_path = root / evidence_value["source_populations"][0]["source_freshness"]["evidence"]["locator"]
         expires = datetime.fromisoformat(
-            json.loads(lease.read_text())["expires_at"]
+            json.loads(lease_path.read_text())["expires_at"]
         ).timestamp()
         time.sleep(max(0, expires - time.time() + 0.1))
         with pytest.raises(implementation.ContractError):
@@ -993,17 +999,6 @@ def test_policy_only_binds_technical_lineage_without_database_byte_equality(
 def test_policy_builtins_receive_no_ambient_credentials(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    fixture_path = (
-        Path(__file__).resolve().parents[2]
-        / "portable-firmware-campaign/.agents/skills/firmware-campaign-bootstrap/scripts/test_policy_decision_controls_v68.py"
-    )
-    spec = importlib.util.spec_from_file_location(
-        "policy_environment_fixture", fixture_path
-    )
-    fixture = importlib.util.module_from_spec(spec)
-    assert spec.loader
-    spec.loader.exec_module(fixture)
-    reconciler = fixture.load()
     hook = tmp_path / "hook"
     hook.mkdir()
     (hook / "sitecustomize.py").write_text(
@@ -1014,10 +1009,7 @@ def test_policy_builtins_receive_no_ambient_credentials(
     for name, implementation in implementations():
         root = tmp_path / name
         root.mkdir()
-        candidate = root / "candidate.db"
-        fixture.candidate(candidate, reconciler)
-        source, lease = fixture.evidence(root)
-        evidence = fixture.input_file(root, reconciler, candidate, source, lease)
+        fixture, reconciler, candidate, evidence = current_policy_fixture(root)
         named = root / "policy-reconciliation-input.json"
         named.write_bytes(evidence.read_bytes())
         work = root / "output"
@@ -1120,23 +1112,10 @@ def test_policy_preflight_children_receive_minimal_environment(
 
 
 def test_policy_only_interruption_preserves_queued_review(tmp_path: Path) -> None:
-    fixture_path = (
-        Path(__file__).resolve().parents[2]
-        / "portable-firmware-campaign/.agents/skills/firmware-campaign-bootstrap/scripts/test_policy_decision_controls_v68.py"
-    )
-    spec = importlib.util.spec_from_file_location(
-        "policy_interruption_fixture", fixture_path
-    )
-    fixture = importlib.util.module_from_spec(spec)
-    assert spec.loader
-    spec.loader.exec_module(fixture)
-    reconciler = fixture.load()
     for name, implementation in implementations():
         root = tmp_path / name
         root.mkdir()
-        candidate = root / "candidate.db"
-        fixture.candidate(candidate, reconciler)
-        source, lease = fixture.evidence(root)
+        fixture, reconciler, candidate, evidence = current_policy_fixture(root)
         request_file = root / "review.txt"
         request_file.write_text("review remains required\n")
         request = {
@@ -1148,9 +1127,9 @@ def test_policy_only_interruption_preserves_queued_review(tmp_path: Path) -> Non
                 "sha256": fixture.sha(request_file),
             },
         }
-        evidence = fixture.input_file(
-            root, reconciler, candidate, source, lease, requests=[request]
-        )
+        evidence_value = json.loads(evidence.read_text())
+        evidence_value["roots"][0]["technical_reopen_requests"] = [request]
+        evidence.write_bytes(fixture.canonical(evidence_value) + b"\n")
         profile_path = root / "profile.json"
         _write(profile_path, {})
         stages = [

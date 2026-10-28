@@ -723,6 +723,7 @@ def technical_candidate_lineage(candidate: Path) -> str:
         "policy_refresh_population",
         "policy_rule_evaluation",
         "policy_rule_evidence_condition",
+        "policy_rule_decision_binding",
         "policy_technical_reopen_queue",
         "programme_scope_separation",
         "ticket_reproduction_assessment",
@@ -1173,6 +1174,7 @@ def verify_profile(
             )
         )
         allowed_versions.add("6.9.0")
+        allowed_versions.add("6.10.0")
         if found.get("contract_version") not in allowed_versions:
             raise ContractError("installed capability release does not satisfy profile")
         contract_release = {
@@ -1898,15 +1900,24 @@ def run_policy_reconciliation(context: dict, work: Path) -> None:
         raise ContractError(
             "POLICY_RECONCILIATION requires exactly one collected policy input"
         )
+    release = json.loads(
+        regular(script.parents[1] / "RELEASE.json", "policy-control release").read_text()
+    )
+    required_format = (
+        "firmware-policy-reconciliation-input-v6.10"
+        if release.get("version") == "6.10.0"
+        else "firmware-policy-reconciliation-input-v6.8"
+    )
     if (
         context.get("profile_schema_version") == "6.8"
         and json.loads(
             regular(evidence[0], "policy reconciliation input").read_text()
         ).get("format_version")
-        != "firmware-policy-reconciliation-input-v6.8"
+        != required_format
     ):
         raise ContractError(
-            "schema-v6.8 policy reconciliation requires fresh policy source controls"
+            f"schema-v6.8 reconciliation under capability {release.get('version')} "
+            f"requires {required_format}"
         )
     clean_env = runtime_environment([])
     result = subprocess.run(
