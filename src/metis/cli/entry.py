@@ -357,6 +357,21 @@ def main():
         type=str,
         help="Path to a Metis config file (default: packaged configuration; no repository config discovery).",
     )
+    parser.add_argument(
+        "--firmware-project-config",
+        type=str,
+        help="Run a content-bound firmware project pack; add --reproduce for downstream workers.",
+    )
+    parser.add_argument(
+        "--reproduce",
+        action="store_true",
+        help="After a firmware project scan, validate and attempt reproduction for every result.",
+    )
+    parser.add_argument(
+        "--reproduce-from-sarif",
+        type=str,
+        help="Firmware-only continuation from a retained SARIF; skips scanner execution.",
+    )
     parser.add_argument("--chroma-dir", type=str, default="./chromadb")
     parser.add_argument(
         "--qdrant-url",
@@ -433,6 +448,14 @@ def main():
         help=argparse.SUPPRESS,
     )
     args = parser.parse_args()
+    if args.reproduce and not args.firmware_project_config:
+        parser.error("--reproduce requires --firmware-project-config")
+    if args.reproduce_from_sarif and not (
+        args.reproduce and args.firmware_project_config
+    ):
+        parser.error(
+            "--reproduce-from-sarif requires --firmware-project-config and --reproduce"
+        )
     if args.tools is not None:
         parser.error(
             "--tools has been removed; configure execution nodes and capability grants in YAML"
@@ -462,6 +485,15 @@ def main():
         )
         return
     try:
+        if args.firmware_project_config:
+            from metis.firmware_phase1 import configure_cli
+
+            args = configure_cli(args)
+            if args.reproduce_from_sarif:
+                from metis.firmware_phase1 import run_pipeline_from_sarif
+
+                run_pipeline_from_sarif(args, args.reproduce_from_sarif)
+                return
         if not check_dir_exists(args.codebase_path):
             raise SystemExit(1)
         configure_logger(logger, args)
@@ -551,7 +583,7 @@ def _run_cli(args):
                             ):
                                 raise
                             pending_error = execution_error
-                        save_graph_outputs(
+                        published_paths = save_graph_outputs(
                             args.output_file,
                             result.outputs,
                             args.quiet,
@@ -576,6 +608,10 @@ def _run_cli(args):
                             raise RuntimeError(
                                 "Triage failed for one or more findings."
                             )
+                        if args.reproduce:
+                            from metis.firmware_phase1 import run_pipeline
+
+                            run_pipeline(args, published_paths)
                     except CancelledError:
                         raise
                     except Exception as exc:
