@@ -33,7 +33,11 @@ REPRODUCTIONS = {
     "UNRESOLVED",
     "NOT_APPLICABLE",
 }
-WORKER_RUNTIME = "gpt-5.6-cyber-xhigh-daybreak-red-env-key-v6"
+WORKER_RUNTIME = "gpt-5.6-cyber-xhigh-daybreak-red-env-key-v7"
+FINAL_SEVERITIES = {"Critical", "High", "Medium", "Low", "None", "Unassessed"}
+SEVERITY_ORDER = {name: index for index, name in enumerate(FINAL_SEVERITIES)}
+SEVERITY_ORDER.update({"Critical": 0, "High": 1, "Medium": 2, "Low": 3,
+                       "None": 4, "Unassessed": 5})
 
 
 class FirmwarePipelineError(ValueError):
@@ -51,6 +55,27 @@ def _hash_object(value: object) -> str:
 def _hash_file(path: Path) -> str:
     with path.open("rb") as handle:
         return hashlib.file_digest(handle, "sha256").hexdigest()
+
+
+def _augmented_worker_schema(path: Path) -> bytes:
+    schema = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(schema, dict) or not isinstance(schema.get("properties"), dict):
+        raise FirmwarePipelineError("worker schema is invalid")
+    required = schema.get("required")
+    if not isinstance(required, list):
+        raise FirmwarePipelineError("worker schema required list is invalid")
+    for name in ("final_severity", "severity_rationale"):
+        if name not in required:
+            required.append(name)
+    schema["properties"]["final_severity"] = {
+        "type": "string",
+        "enum": sorted(FINAL_SEVERITIES),
+    }
+    schema["properties"]["severity_rationale"] = {
+        "type": "string",
+        "minLength": 1,
+    }
+    return _canonical(schema) + b"\n"
 
 
 def _regular(path: Path, label: str) -> Path:
@@ -276,7 +301,11 @@ def _validate_worker_result(path: Path, project: dict, record_id: str) -> dict:
         "reopen_condition",
         "artifacts",
     }
-    if not isinstance(result, dict) or set(result) != required:
+    severity_fields = {"final_severity", "severity_rationale"}
+    if not isinstance(result, dict) or set(result) not in {
+        frozenset(required),
+        frozenset(required | severity_fields),
+    }:
         raise FirmwarePipelineError("worker result has unexpected fields")
     if result["format_version"] != "metis-firmware-phase1-worker-result-v1":
         raise FirmwarePipelineError("worker result version is invalid")
@@ -292,6 +321,11 @@ def _validate_worker_result(path: Path, project: dict, record_id: str) -> dict:
         raise FirmwarePipelineError("TP_OOS requires an OOS assessment")
     if tag in {"FP_NO_BUG", "HARDENING", "EMPTY_OR_FILTERED"} and reproduction != "NOT_APPLICABLE":
         raise FirmwarePipelineError("non-TP result claims reproduction")
+    if severity_fields.issubset(result):
+        if result["final_severity"] not in FINAL_SEVERITIES:
+            raise FirmwarePipelineError("worker final severity is invalid")
+        if not isinstance(result["severity_rationale"], str) or not result["severity_rationale"].strip():
+            raise FirmwarePipelineError("worker severity rationale is invalid")
     roles = {item.get("role") for item in result["artifacts"] if isinstance(item, dict)}
     if tag in {"TP_IN_SCOPE", "TP_OOS", "FP_NO_BUG"} and "source" not in roles:
         raise FirmwarePipelineError("decisive classification lacks hash-bound source evidence")
@@ -316,6 +350,8 @@ Programme search rules:
 
 Classify the record as exactly one of TP_IN_SCOPE, TP_OOS, FP_NO_BUG, HARDENING, DEFERRED, or EMPTY_OR_FILTERED. Keep technical validity and programme scope separate in the rationale. Attempt reproduction for every TP_IN_SCOPE record. If a faithful target is unavailable, retain TP_IN_SCOPE when technically established and use HARDWARE_BLOCKED or UNRESOLVED; never fabricate success. Successful or blocked reproduction levels belong only to TP results: FP_NO_BUG, HARDENING and EMPTY_OR_FILTERED must use NOT_APPLICABLE, while DEFERRED must use UNRESOLVED.
 
+Set final_severity after considering the source, prerequisites, demonstrated impact, controls and reproduction outcome. This rating is independent of programme scope. A hardware-blocked issue may still be High or Critical when the boundary and impact are source-proven; a reproduced availability-only result may be Low or Medium. Use None for no qualifying security issue and Unassessed only when decisive evidence is unavailable. Explain any difference from sarif_result.properties.severity in severity_rationale.
+
 A completed reproduction requires evidence files for a positive run, a patched/negative run and a clean control. Place evidence under the `evidence/` subdirectory of the evidence output directory. Copy every decisive source file or excerpt into `evidence/source/`; do not cite a path inside the disposable `source/` checkout as an artifact. In the final JSON, every artifact path must be relative to the evidence output directory and begin with `evidence/` (for example, `evidence/positive.log`), never absolute and never containing `..`. Return only JSON matching the supplied schema."""
 
 
@@ -327,6 +363,7 @@ def _run_one(project: dict, record: tuple[str, dict]) -> dict:
             "source": project["source_commit"],
             "record": sarif,
             "worker_runtime": WORKER_RUNTIME,
+            "result_contract": "final-severity-v1",
         }
     )
     destination = project["_output"] / "pipeline" / "records" / record_id / identity
@@ -350,7 +387,7 @@ def _run_one(project: dict, record: tuple[str, dict]) -> dict:
         packet_path.write_bytes(_canonical(packet) + b"\n")
         result = staging / "result.json"
         schema = staging / "worker-result.schema.json"
-        schema.write_bytes(project["_schema"].read_bytes())
+        schema.write_bytes(_augmented_worker_schema(project["_schema"]))
         prepared = subprocess.run(
             [
                 "git",
@@ -439,6 +476,8 @@ def _run_one(project: dict, record: tuple[str, dict]) -> dict:
                 )[:500],
                 "rationale": f"The downstream Codex worker exited {completed.returncode}; see its hash-bound blocker log.",
                 "reopen_condition": "Resume the exact record with the declared worker/runtime.",
+                "final_severity": "Unassessed",
+                "severity_rationale": "Worker execution did not produce a valid assessment.",
                 "artifacts": [
                     {
                         "path": blocker.name,
@@ -485,6 +524,8 @@ def _run_one(project: dict, record: tuple[str, dict]) -> dict:
                 )[:500],
                 "rationale": "The downstream Codex worker returned a result that failed the Phase-1 evidence contract; see its hash-bound blocker evidence.",
                 "reopen_condition": "Resume the exact record with the declared worker/runtime after correcting the result-contract violation.",
+                "final_severity": "Unassessed",
+                "severity_rationale": "Evidence validation failed before the assessment could be admitted.",
                 "artifacts": evidence,
             }
             result.write_bytes(_canonical(fallback) + b"\n")
@@ -499,6 +540,93 @@ def _runtime_failure(result: dict) -> bool:
     ).startswith("The downstream Codex worker exited ")
 
 
+def _severity(value: object) -> str:
+    return value if isinstance(value, str) and value in FINAL_SEVERITIES else "Unassessed"
+
+
+def _reproduction_display(value: str) -> str:
+    if value in {"PLATFORM_FAITHFUL_REPRODUCED", "SOFTWARE_DEFECT_REPRODUCED"}:
+        return "Reproduced"
+    if value == "HARDWARE_BLOCKED":
+        return "Blocked HW"
+    return "-"
+
+
+def _finding_report(project: dict, all_records: list[tuple[str, dict]], results: list[dict], filtered: set[str]) -> dict:
+    result_by_id = {result["record_id"]: result for result in results}
+    rows = []
+    for record_id, sarif in all_records:
+        properties = sarif.get("properties", {}) if isinstance(sarif.get("properties"), dict) else {}
+        scanner_severity = _severity(properties.get("severity"))
+        result = result_by_id.get(record_id)
+        if result is None:
+            if record_id not in filtered:
+                raise FirmwarePipelineError("selected record is missing its result")
+            result = {
+                "technical_class": "EMPTY_OR_FILTERED",
+                "programme_scope": "OOS",
+                "reproduction_level": "NOT_APPLICABLE",
+                "title": sarif.get("message", {}).get("text", "Metis result"),
+                "final_severity": "None",
+                "severity_rationale": "The exact project scope excluded this source before worker dispatch.",
+            }
+        final_severity = _severity(result.get("final_severity"))
+        assessed = final_severity != "Unassessed"
+        rows.append({
+            "metis_id": properties.get("metisFindingId"),
+            "record_id": record_id,
+            "title": result["title"],
+            "technical_class": result["technical_class"],
+            "programme_scope": result["programme_scope"],
+            "reproduction": _reproduction_display(result["reproduction_level"]),
+            "metis_severity": scanner_severity,
+            "final_severity": final_severity,
+            "severity_changed": (final_severity != scanner_severity) if assessed else None,
+            "severity_rationale": result.get("severity_rationale", "Legacy result has no independent final-severity assessment."),
+        })
+    rows.sort(key=lambda row: (
+        min(SEVERITY_ORDER[row["metis_severity"]], SEVERITY_ORDER[row["final_severity"]]),
+        row["title"],
+    ))
+    report = {
+        "format_version": "metis-firmware-phase1-finding-report-v1",
+        "project_id": project["project_id"],
+        "source_commit": project["source_commit"],
+        "input_sarif_sha256": project["_sarif_sha256"],
+        "worker_runtime": WORKER_RUNTIME,
+        "findings": rows,
+    }
+    report["content_hash"] = _hash_object(report)
+    return report
+
+
+def _write_finding_report(project: dict, report: dict) -> tuple[str, str]:
+    relative_json = Path("pipeline") / f"findings-{report['content_hash']}.json"
+    target_json = project["_output"] / relative_json
+    target_json.parent.mkdir(parents=True, exist_ok=True)
+    if not target_json.exists():
+        target_json.write_bytes(_canonical(report) + b"\n")
+    relative_md = relative_json.with_suffix(".md")
+    target_md = project["_output"] / relative_md
+    if not target_md.exists():
+        lines = [
+            f"# {project['project_id']} firmware findings",
+            "",
+            f"Total: {len(report['findings'])}",
+            "",
+            "| Final status | Metis ID | Finding | Metis severity | Final severity | Changed | Reproducer |",
+            "|---|---|---|---|---|---|---|",
+        ]
+        for row in report["findings"]:
+            changed = "Yes" if row["severity_changed"] is True else "No" if row["severity_changed"] is False else "Pending"
+            title = str(row["title"]).replace("|", "\\|").replace("\n", " ")
+            lines.append(
+                f"| {row['technical_class']} | `{str(row['metis_id'])[:8]}…` | {title} | {row['metis_severity']} | {row['final_severity']} | {changed} | {row['reproduction']} |"
+            )
+        target_md.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return relative_json.as_posix(), relative_md.as_posix()
+
+
 def run_pipeline(args, published_paths: dict[str, list[str]]) -> None:
     project = args._firmware_phase1
     source = _directory(project["_base"] / project["source"], "source")
@@ -508,7 +636,8 @@ def run_pipeline(args, published_paths: dict[str, list[str]]) -> None:
     project["_sarif_sha256"] = _hash_file(sarif)
     all_records = _sarif_records(sarif)
     records = [record for record in all_records if _record_selected(project, record[1])]
-    filtered = len(all_records) - len(records)
+    filtered_ids = {record_id for record_id, _ in all_records} - {record_id for record_id, _ in records}
+    filtered = len(filtered_ids)
     results: list[dict] = []
     remaining = records
     if records:
@@ -531,8 +660,10 @@ def run_pipeline(args, published_paths: dict[str, list[str]]) -> None:
         reproductions[result["reproduction_level"]] += 1
     if sum(counts.values()) != len(all_records):
         raise FirmwarePipelineError("not every Metis record received one classification")
+    finding_report = _finding_report(project, all_records, results, filtered_ids)
+    report_json, report_md = _write_finding_report(project, finding_report)
     summary = {
-        "format_version": "metis-firmware-phase1-summary-v1",
+        "format_version": "metis-firmware-phase1-summary-v2",
         "project_id": project["project_id"],
         "source_commit": project["source_commit"],
         "scanner_records": len(all_records),
@@ -545,6 +676,8 @@ def run_pipeline(args, published_paths: dict[str, list[str]]) -> None:
         "indirect_call_evidence": "DISABLED",
         "cppcheck_used": False,
         "submission_ready": False,
+        "finding_report": report_json,
+        "finding_report_markdown": report_md,
     }
     summary["content_hash"] = _hash_object(summary)
     summary_path = project["_output"] / "pipeline" / f"summary-{summary['content_hash']}.json"
