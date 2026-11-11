@@ -33,6 +33,7 @@ from pathlib import Path
 
 from metis_firmware_campaign.analysis_packet import validate as validate_analysis_packet
 from metis_firmware_campaign import technical_state_correction
+from metis_firmware_campaign import technical_adjudication
 
 FORMAT = "firmware-autonomous-campaign-v1"
 V6_OUTPUTS = {
@@ -1175,6 +1176,7 @@ def verify_profile(
         )
         allowed_versions.add("6.9.0")
         allowed_versions.add("6.10.0")
+        allowed_versions.add("6.11.0")
         if found.get("contract_version") not in allowed_versions:
             raise ContractError("installed capability release does not satisfy profile")
         contract_release = {
@@ -1469,6 +1471,7 @@ def policy_only_technical_admission(
     prior_receipts: dict[str, dict],
     current_input_lineage: str,
     verified_policy_replacement: dict | None = None,
+    source_checkouts: dict[str, str] | None = None,
 ) -> str:
     current_candidate_lineage = technical_candidate_lineage(candidate)
     expected_candidate = (
@@ -1519,7 +1522,9 @@ def policy_only_technical_admission(
         raise ContractError("policy-only candidate technical lineage changed")
     if current_input_lineage != expected_inputs:
         raise ContractError("policy-only technical input lineage changed")
-    if prior_workflow.get("technical_state_transition"):
+    if prior_workflow.get("technical_state_transition") and not prior_workflow.get(
+        "technical_adjudication_transition"
+    ):
         try:
             technical_state_correction.verify_transition(
                 state,
@@ -1533,21 +1538,40 @@ def policy_only_technical_admission(
             )
         except technical_state_correction.CorrectionError as error:
             raise ContractError(str(error)) from error
-        if not policy_state_is_current(
-            candidate, Path(profile_identity["locator"]).parent, required=True
-        ):
-            if verified_policy_replacement is None:
-                raise ContractError(
-                    "technical-state correction policy evidence expired"
-                )
-            replacement = policy_refresh_bundle(
-                Path(verified_policy_replacement["locator"]),
-                profile["project"]["project_id"],
+    if prior_workflow.get("technical_state_transition") and not policy_state_is_current(
+        candidate, Path(profile_identity["locator"]).parent, required=True
+    ):
+        if verified_policy_replacement is None:
+            raise ContractError(
+                "technical-state correction policy evidence expired"
             )
-            if replacement["sha256"] != verified_policy_replacement["sha256"]:
-                raise ContractError(
-                    "technical-state correction policy replacement changed"
-                )
+        replacement = policy_refresh_bundle(
+            Path(verified_policy_replacement["locator"]),
+            profile["project"]["project_id"],
+        )
+        if replacement["sha256"] != verified_policy_replacement["sha256"]:
+            raise ContractError(
+                "technical-state correction policy replacement changed"
+            )
+    if prior_workflow.get("technical_adjudication_transition"):
+        try:
+            technical_adjudication.verify_transition(
+                state,
+                candidate,
+                profile,
+                profile_identity,
+                prior_workflow,
+                prior_receipts,
+                current_input_lineage,
+                technical_candidate_lineage,
+                source_checkouts,
+                ({
+                    item["component_id"]: item["revision"]
+                    for item in profile["project"].get("components", [])
+                } or None),
+            )
+        except technical_adjudication.AdjudicationError as error:
+            raise ContractError(str(error)) from error
     return current_candidate_lineage
 
 
@@ -1905,7 +1929,7 @@ def run_policy_reconciliation(context: dict, work: Path) -> None:
     )
     required_format = (
         "firmware-policy-reconciliation-input-v6.10"
-        if release.get("version") == "6.10.0"
+        if release.get("version") in {"6.10.0", "6.11.0"}
         else "firmware-policy-reconciliation-input-v6.8"
     )
     if (
@@ -3120,10 +3144,15 @@ def run(args: argparse.Namespace) -> dict:
     correction_path = getattr(args, "technical_state_correction", None)
     approval_path = getattr(args, "technical_state_approval", None)
     correction_mode = bool(correction_path or approval_path)
+    adjudication_path = getattr(args, "technical_adjudication", None)
+    adjudication_approval = getattr(args, "technical_adjudication_approval", None)
+    adjudication_mode = bool(adjudication_path or adjudication_approval)
     selector_files = [
         material_file(Path.cwd(), x, "selector")
         for x in (
-            [] if policy_only or correction_mode else args.ticket_selector + args.confluence_selector
+            []
+            if policy_only or correction_mode or adjudication_mode
+            else args.ticket_selector + args.confluence_selector
         )
     ]
     preliminary = json.loads(
@@ -3154,6 +3183,16 @@ def run(args: argparse.Namespace) -> dict:
         else set()
     )
     refresh_path = getattr(args, "policy_refresh_bundle", None)
+    if adjudication_mode and (not adjudication_path or not adjudication_approval):
+        raise ContractError(
+            "technical adjudication requires adjudication and approval artifacts"
+        )
+    if adjudication_mode and (
+        correction_mode or policy_only or refresh_path or args.credential_env
+    ):
+        raise ContractError(
+            "technical adjudication is a separate credential-free execution mode"
+        )
     if correction_mode and (not correction_path or not approval_path):
         raise ContractError("technical-state correction requires correction and approval artifacts")
     if correction_mode and (policy_only or refresh_path or args.credential_env):
@@ -3203,10 +3242,77 @@ def run(args: argparse.Namespace) -> dict:
         )
     except technical_state_correction.CorrectionError as error:
         raise ContractError(str(error)) from error
+    try:
+        technical_adjudication.recover(
+            state,
+            candidate,
+            candidate_state,
+            checkouts,
+            {
+                item["component_id"]: item["revision"]
+                for item in profile["project"].get("components", [])
+            },
+        )
+    except technical_adjudication.AdjudicationError as error:
+        raise ContractError(str(error)) from error
     recover_pending_commits(state, candidate, profile, profile_identity)
     current_technical_inputs = technical_input_lineage(
         profile, Path(profile_identity["locator"]).parent
     )
+    if adjudication_mode:
+        workflow_path = regular(state / "workflow.json", "existing full workflow")
+        prior_workflow = json.loads(workflow_path.read_text())
+        prior_workflow["_locator"] = str(workflow_path)
+        if prior_workflow.get("profile_sha256") != profile_identity["sha256"]:
+            raise ContractError("technical adjudication changed the campaign profile")
+        prior_hashes = prior_workflow.get("stages", {})
+        if set(prior_hashes) != set(stages):
+            raise ContractError(
+                "technical adjudication lacks complete predecessor stage closure"
+            )
+        prior_receipts = {
+            key: completed_receipt(state, key, prior_hashes[key])
+            for key in sorted(stages)
+        }
+        if prior_workflow.get("technical_state_transition") and not prior_workflow.get(
+            "technical_adjudication_transition"
+        ):
+            try:
+                technical_state_correction.verify_transition(
+                    state,
+                    candidate,
+                    profile,
+                    profile_identity,
+                    prior_workflow,
+                    prior_receipts,
+                    current_technical_inputs,
+                    technical_candidate_lineage,
+                )
+            except technical_state_correction.CorrectionError as error:
+                raise ContractError(str(error)) from error
+        try:
+            return technical_adjudication.apply_with_lock(
+                adjudication_path=Path(adjudication_path),
+                approval_path=Path(adjudication_approval),
+                project_id=profile["project"]["project_id"],
+                project=Path(profile_identity["locator"]).parent,
+                state=state,
+                candidate=candidate,
+                profile=profile,
+                profile_identity=profile_identity,
+                prior_workflow=prior_workflow,
+                receipts=prior_receipts,
+                current_technical_inputs=current_technical_inputs,
+                technical_lineage=technical_candidate_lineage,
+                candidate_state=candidate_state,
+                source_checkouts=checkouts,
+                source_revisions={
+                    item["component_id"]: item["revision"]
+                    for item in profile["project"].get("components", [])
+                },
+            )
+        except technical_adjudication.AdjudicationError as error:
+            raise ContractError(str(error)) from error
     if correction_mode:
         workflow_path = regular(state / "workflow.json", "existing full workflow")
         prior_workflow = json.loads(workflow_path.read_text())
@@ -3263,6 +3369,7 @@ def run(args: argparse.Namespace) -> dict:
             prior_receipts,
             current_technical_inputs,
             verified_policy_replacement=refresh,
+            source_checkouts=checkouts,
         )
         selected = {
             key for key, stage in stages.items() if stage["phase"] in POLICY_ONLY_PHASES
@@ -3331,6 +3438,10 @@ def run(args: argparse.Namespace) -> dict:
         final["base_workflow_sha256"] = prior_workflow["workflow_sha256"]
         if prior_workflow.get("technical_state_transition"):
             final["technical_state_transition"] = prior_workflow["technical_state_transition"]
+        if prior_workflow.get("technical_adjudication_transition"):
+            final["technical_adjudication_transition"] = prior_workflow[
+                "technical_adjudication_transition"
+            ]
     final["workflow_sha256"] = object_hash(final)
     atomic_json(state / "workflow.json", final)
     return {
@@ -3523,6 +3634,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--policy-refresh-bundle", type=Path)
     p.add_argument("--technical-state-correction", type=Path)
     p.add_argument("--technical-state-approval", type=Path)
+    p.add_argument("--technical-adjudication", type=Path)
+    p.add_argument("--technical-adjudication-approval", type=Path)
     p = commands.add_parser("replay")
     p.add_argument("--project-profile", type=Path, required=True)
     p.add_argument("--candidate", required=True)

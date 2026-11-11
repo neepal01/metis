@@ -434,6 +434,16 @@ def main():
         help="Recorded approval for the exact technical-state correction.",
     )
     parser.add_argument(
+        "--firmware-technical-adjudication",
+        metavar="ADJUDICATION",
+        help="Approval-bound offline adjudication of existing scanner records.",
+    )
+    parser.add_argument(
+        "--firmware-technical-adjudication-approval",
+        metavar="APPROVAL",
+        help="Recorded approval for the exact scanner-record adjudication.",
+    )
+    parser.add_argument(
         "--tools",
         help=argparse.SUPPRESS,
     )
@@ -463,6 +473,25 @@ def main():
         args.firmware_technical_state_correction
         or args.firmware_technical_state_approval
     )
+    adjudication_mode = bool(
+        args.firmware_technical_adjudication
+        or args.firmware_technical_adjudication_approval
+    )
+    if adjudication_mode and (
+        not args.firmware_campaign
+        or not args.resume
+        or not args.firmware_technical_adjudication
+        or not args.firmware_technical_adjudication_approval
+    ):
+        parser.error(
+            "technical adjudication requires --firmware-campaign, --resume, "
+            "--firmware-technical-adjudication and "
+            "--firmware-technical-adjudication-approval"
+        )
+    if adjudication_mode and (
+        correction_mode or args.firmware_policy_only or args.firmware_policy_refresh
+    ):
+        parser.error("technical adjudication is a separate non-executing mode")
     if correction_mode and (
         not args.firmware_campaign
         or not args.resume
@@ -525,6 +554,8 @@ def main():
             policy_refresh_bundle=Path(args.firmware_policy_refresh) if args.firmware_policy_refresh else None,
             technical_state_correction=Path(args.firmware_technical_state_correction) if args.firmware_technical_state_correction else None,
             technical_state_approval=Path(args.firmware_technical_state_approval) if args.firmware_technical_state_approval else None,
+            technical_adjudication=Path(args.firmware_technical_adjudication) if args.firmware_technical_adjudication else None,
+            technical_adjudication_approval=Path(args.firmware_technical_adjudication_approval) if args.firmware_technical_adjudication_approval else None,
         )
         if exit_code:
             raise SystemExit(exit_code)

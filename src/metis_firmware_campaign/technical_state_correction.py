@@ -1317,6 +1317,7 @@ def verify_transition(
     receipts: dict[str, dict],
     current_technical_inputs: str,
     technical_lineage: Callable[[Path], str],
+    descendant_base: dict | None = None,
 ) -> dict:
     binding = workflow.get("technical_state_transition")
     if set(binding or {}) != {"transition_id", "locator", "sha256"}:
@@ -1337,17 +1338,30 @@ def verify_transition(
         or transition["content_hash"] != binding["sha256"]
     ):
         raise CorrectionError("workflow technical-state transition identity mismatch")
-    if workflow.get("execution_mode") == "TECHNICAL_STATE_CORRECTION" and (
+    if descendant_base is None and workflow.get("execution_mode") == "TECHNICAL_STATE_CORRECTION" and (
         transition["successor_candidate"] != _candidate_state(candidate)
         or workflow.get("candidate") != transition["successor_candidate"]
     ):
         raise CorrectionError("technical-state transition candidate differs")
-    if (
-        transition["technical_candidate_lineage_after"] != technical_lineage(candidate)
+    if descendant_base is None:
+        if (
+            transition["technical_candidate_lineage_after"] != technical_lineage(candidate)
+            or workflow.get("technical_candidate_lineage_sha256")
+            != transition["technical_candidate_lineage_after"]
+        ):
+            raise CorrectionError("technical-state transition lineage differs")
+    elif (
+        set(descendant_base) != {
+            "candidate", "technical_candidate_lineage_sha256", "workflow_sha256"
+        }
+        or transition["technical_candidate_lineage_after"]
+        != descendant_base["technical_candidate_lineage_sha256"]
+        or workflow.get("candidate") != descendant_base["candidate"]
         or workflow.get("technical_candidate_lineage_sha256")
-        != transition["technical_candidate_lineage_after"]
+        != descendant_base["technical_candidate_lineage_sha256"]
+        or workflow.get("workflow_sha256") != descendant_base["workflow_sha256"]
     ):
-        raise CorrectionError("technical-state transition lineage differs")
+        raise CorrectionError("technical-state transition descendant base differs")
     if (
         transition["technical_input_lineage_sha256"] != current_technical_inputs
         or workflow.get("technical_input_lineage_sha256") != current_technical_inputs
@@ -1411,7 +1425,11 @@ def verify_transition(
     ):
         raise CorrectionError("retained receipt/context/output provenance changed")
     snapshot = transition_directory / "candidate-successor.db"
-    if _candidate_state(snapshot) != transition["successor_candidate"]:
+    if (
+        _candidate_state(snapshot) != transition["successor_candidate"]
+        or technical_lineage(snapshot)
+        != transition["technical_candidate_lineage_after"]
+    ):
         raise CorrectionError("technical-state transition snapshot changed")
     _verify_successor_database(snapshot, correction)
     commitments = transition.get("committed_reopen_requests")

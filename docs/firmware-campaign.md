@@ -178,3 +178,40 @@ Submission pauses and bounty,
 owner, disclosure or readiness decisions cannot change programme scope.
 Incomplete tickets remain unavailable exact-owner/novelty evidence. Both
 inclusion and exclusion are required; keyword classification is not supported.
+
+## Capability 6.11 downstream technical adjudication (REVIEW)
+
+This revision adds a separate, credential-free transition for externally
+reviewed existing scanner records. It is non-executing and does not call a
+provider, worker, target, health check or calibration path:
+
+```bash
+uv run --no-sync metis --firmware-campaign /path/to/profile.json \
+  --codebase-path /path/to/source --resume \
+  --firmware-technical-adjudication /absolute/path/adjudication.json \
+  --firmware-technical-adjudication-approval /absolute/path/approval.json
+```
+
+The immutable cohort accounts for the complete scanner import and records an
+explicit action for every record. Selected records may move only from deferred
+to a reviewed terminal technical class; unselected records remain unchanged.
+NO_BUG requires independent primary and blind evidence, and positive decisions
+retain the existing evidence-capsule, proof and root/fingerprint contracts.
+Each capsule must use its referenced build's configuration hash and commit the
+canonical exact-build dependency rows ordered by kind, locator and binding ID.
+New-root deduplication fingerprints are bound to that root, not merely to the
+same reviewed cohort.
+The transition publishes an exact prepared successor under the authoritative
+writer lock, preserves provider outputs as immutable prerequisites, supports
+exact crash recovery and marks policy currency, campaign completion and
+submission readiness false. Operational use, refreshed evidence promotion and
+release finalization remain separately authorized.
+
+Every inserted row must bind a selected cohort record, its new evidence
+capsule or its distinct new root. Review artifacts bind the predecessor row,
+and the transition validates exact publication bytes plus every destination
+type before mutation. Verified policy-only descendants may retain this
+transition without rewriting historical or provider receipts. A later,
+disjoint adjudication recursively revalidates every preceding adjudication's
+approval, reviewed evidence, provider prerequisites and its original
+technical-state/queue authorization chain.
